@@ -15,3 +15,16 @@ There are two specific features that enable this:
 
 This is similar to Haxe, but instead of relying on an awkward ECMA-like syntax and vague semantics, Uniclo has a very
 stringent semantics and clearly delineates the platform-independent parts from the platform-dependent parts.
+
+The target platform is defined by a set of features, whereof some are mutually exclusive.
+
+All the compiler directives start with either `(comment *feature*` or `($`.
+
+## Example Code
+
+`
+($? [:c++ :c] ;; if we are targeting C/C++
+  ($! ;; this means that we simply output the string literal as is
+    "std::cout << \"This is C/C++\" << std::endl;"
+($? :java
+  ($! "System.println(\"This is Java\")"))
