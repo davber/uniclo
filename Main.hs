@@ -1,7 +1,8 @@
 module Main where
 
 import Prelude hiding (catch)
-import Text.ParserCombinators.Parsec hiding (State)
+import Control.Applicative hiding (many)
+import Text.ParserCombinators.Parsec hiding (State, (<|>))
 import Text.ParserCombinators.Parsec.Token as P hiding (operator)
 import Text.Parsec.Numbers as Num
 import Text.ParserCombinators.Parsec.Char
@@ -36,12 +37,22 @@ data Lambda = Lambda String [Param] Expr Function
 instance Show Lambda where
   show (Lambda name params expr _) = name ++ "[" ++ show expr ++ "]"
 type Param = Expr
-data Expr = EKeyword String | ESymbol String | EList [Expr] | ENumber Integer |
+data SeqType = SeqList | SeqVector | SeqMap | SeqSet deriving (Show, Read, Eq, Ord)
+leftDelim SeqList = "("
+leftDelim SeqVector = "["
+leftDelim SeqSet = "#{"
+leftDelim SeqMap = "{"
+rightDelim SeqList = ")"
+rightDelim SeqVector = "]"
+rightDelim SeqSet = "}"
+rightDelim SeqMap = "}"
+
+data Expr = EKeyword String | ESymbol String | EList SeqType [Expr] | ENumber Integer |
             EString String | EBool Bool | ENil | Fun Lambda | Macro Lambda | ESpecial String Function
 instance Show Expr where
   show (EKeyword s) = ":" ++ s
   show (ESymbol s) = s
-  show (EList es) = "(" ++ (Str.join " " $ map show es) ++ ")"
+  show (EList seqType es) = leftDelim seqType ++ (Str.join " " $ map show es) ++ rightDelim seqType
   show (ENumber num) = show num
   show (EString s) = "\"" ++ s ++ "\""
   show (EBool b) = if b then "true" else "false"
@@ -52,7 +63,8 @@ instance Show Expr where
 instance Eq Expr where
   EKeyword s1 == EKeyword s2 = s1 == s2
   ESymbol s1 == ESymbol s2 = s1 == s2
-  EList e1 == EList e2 = all (\(x1, x2) -> x1 == x2) $ zip e1 e2
+  EList st1 e1 == EList st2 e2 = st1 == st2 &&
+    all (\(x1, x2) -> x1 == x2) (zip e1 e2)
   ENumber num1 == ENumber num2 = num1 == num2
   EString s1 == EString s2 = s1 == s2
   EBool b1 == EBool b2 = b1 == b2
@@ -140,7 +152,7 @@ createEmptyEnv = Env (createBindings [
   -- specials
   "def", "do", "if", "trace", "quote", "lambda", "macro",
   -- primitives
-  "print", "eval", "slurp", "read*", "macroexpand-1",
+  "print", "eval", "eval*", "slurp", "read*", "macroexpand-1",
   "cons", "first", "rest",
   "+", "-", "*", "div", "mod", "<", "=", "list", "nil", "false", "true"]
   [ESpecial "def" (\((ESymbol var):value:[]) -> do
@@ -165,8 +177,8 @@ createEmptyEnv = Env (createBindings [
       return evalParam),
    ESpecial "quote" (\(param : _) -> do
       return $ param),
-   ESpecial "lambda" (\((EList params) : body) -> do
-      let doBody = (EList ((ESymbol "do") : body))
+   ESpecial "lambda" (\((EList _ params) : body) -> do
+      let doBody = (EList SeqList ((ESymbol "do") : body))
       return $ Fun $ Lambda "lambda" params doBody (\actuals -> do
         e <- get
         let local = localEnv e
@@ -176,8 +188,8 @@ createEmptyEnv = Env (createBindings [
         val <- evalExpr doBody
         setLocalEnv local        
         return val)),
-   ESpecial "macro" (\((EList params) : body) -> do
-      let doBody = (EList ((ESymbol "do") : body))
+   ESpecial "macro" (\((EList _ params) : body) -> do
+      let doBody = (EList SeqList ((ESymbol "do") : body))
       return $ Macro $ Lambda "macro" params doBody (\actuals -> do
         e <- get
         let local = localEnv e
@@ -193,20 +205,24 @@ createEmptyEnv = Env (createBindings [
    Fun (Lambda "eval" [] ENil $ (\(param : _) ->
      evalExpr param
    )),
+   Fun (Lambda "eval*" [] ENil $ (\((EList _ exprs) : _) -> do
+     values <- mapM evalExpr exprs
+     return $ if length values == 0 then ENil else last values
+   )),
    Fun (Lambda "slurp" [] ENil $ (\((EString n) : _) -> do
      cont <- liftIO $ tryReadFile n
      return $ EString cont
    )),
    Fun (Lambda "read*" [] ENil $ (\((EString s) : _) -> do
      let exprs = readProgram s
-     either (\e -> throwError $ "Could not read code due to " ++ show e) (return . EList) exprs
+     either (\e -> throwError $ "Could not read code due to " ++ show e) (return . (EList SeqList)) exprs
    )),
-   Fun (Lambda "macroexpand-1" [] ENil $ (\((EList (m : params) : _)) -> do
+   Fun (Lambda "macroexpand-1" [] ENil $ (\((EList _ (m : params) : _)) -> do
      macro <- evalExpr m
      apply macro params)),
-   Fun (Lambda "cons" [] ENil $ (\(f : (EList r) : _) -> return $ EList (f : r))),
-   Fun (Lambda "first" [] ENil $ (\((EList (f: _)) : _) -> return f)),
-   Fun (Lambda "rest" [] ENil $ (\((EList (_: r)) : _) -> return $ EList r)),
+   Fun (Lambda "cons" [] ENil $ (\(f : (EList _ r) : _) -> return $ EList SeqList (f : r))),
+   Fun (Lambda "first" [] ENil $ (\((EList _ (f: _)) : _) -> return f)),
+   Fun (Lambda "rest" [] ENil $ (\((EList seqType (_: r)) : _) -> return $ EList seqType r)),
    Fun (Lambda "+" [] ENil $ numHandler (foldl1 (+))),
    Fun (Lambda "-" [] ENil $ numHandler (\(n : ns) -> if ns==[] then - n else (foldl (-) n ns))),
    Fun (Lambda "*" [] ENil $ numHandler (foldl1 (*))),
@@ -214,43 +230,49 @@ createEmptyEnv = Env (createBindings [
    Fun (Lambda "mod" [] ENil $ numHandler (foldl1 mod)),
    Fun (Lambda "<" [] ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 < p2))),
    Fun (Lambda "=" [] ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 == p2))),
-   Fun (Lambda "list" [] ENil $ (\params -> return $ EList params)),
+   Fun (Lambda "list" [] ENil $ (\params -> return $ EList SeqList params)),
    ENil,
    EBool False,
    EBool True])
    createEmptyBindings
 
+-- utility to compose an unary function with a binary one
+(.*) = (.) . (.)
+
 createEmptyState :: Computation
 createEmptyState = put createEmptyEnv >> return ENil
 
 combineEnv :: Env -> Bindings -> Env
-combineEnv env@(Env global local) bindings = env { localEnv = Map.union local bindings }
+combineEnv env@(Env global local) bindings = env { localEnv = Map.union bindings local }
 
 --
 -- The parser, using Parsec
 --
 
 lexer = P.makeTokenParser haskellDef
+eol = (eof >> return ' ') <|> newline
 operator = oneOf "!#$%&|*+-/:<=>?_'"
-parseProgram = many parseSpacedExpr
-parseSpacedExpr = skipMany space >> parseExpr
-parseString = do char '"'
-                 str <- many $ noneOf "\""
-                 char '"'
-                 return $ EString str
-parseNumber =  do
-  num <- try Num.parseIntegral
-  return $ ENumber num
-parseKeyword = do char ':'
-                  atom <- many (letter <|> digit <|> operator)
-                  return $ EKeyword atom
-parseSymbol = do  f <- letter <|> operator
-                  r <- many (letter <|> digit <|> operator)
-                  let atom = f:r
-                  return $ ESymbol atom
-parseAtom =  parseNumber <|> parseString <|> parseKeyword <|> parseSymbol
-parseList = P.parens lexer $ liftM EList $ sepBy parseExpr spaces
-parseExpr = parseAtom <|> parseList
+parseProgram = whitespace *> many parseSpacedExpr <* eof
+parseSpacedExpr = parseExpr <* whitespace
+parseString = EString <$> (char '"' *> many (noneOf "\"") <* char '"')
+parseNumber =  ENumber <$> try Num.parseIntegral <?> "number"
+parseKeyword = EKeyword <$>
+               (char ';' *>
+                many (letter <|> digit <|> operator))
+               <?> "keyword"
+parseSymbol = ESymbol .* (:) <$>
+              (letter <|> operator) <*>
+              many (letter <|> digit <|> operator)
+              <?> "symbol"
+parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
+             <?> "atom"
+parseSeq seqType = EList seqType <$> (string (leftDelim seqType) *> many parseSpacedExpr <* string (rightDelim seqType))
+                   <?> "list"
+parseList = parseSeq SeqList
+parseVector = parseSeq SeqVector
+parseExpr = parseAtom <|> parseList <|> parseVector
+whitespace = (skipMany (space <|> (comment >> return ' ') <|> char ',')) <?> "whitespace"
+comment = char ';' >> many (noneOf "\n") >> eol
 
 readProgram :: String -> ParseResult
 readProgram input = either (Left . show) Right $ parse parseProgram "clojure" input
@@ -269,18 +291,24 @@ evalExpr (EKeyword key) = return (EKeyword key)
 evalExpr (ESymbol sym) = do env <- get
                             let value = getVar env sym
                             maybe (throwError $ "Symbol " ++ sym ++ " had no value") return value
-evalExpr (EList []) = return $ EList []
-evalExpr (EList (f : params)) = do
+evalExpr e@(EList _ []) = return e
+evalExpr (EList SeqList (f : params)) = do
   fun <- evalExpr f
   apply fun params
+evalExpr (EList seqType exprs) = do
+  vals <- mapM evalExpr exprs
+  return $ EList seqType vals
 evalExpr e@(ENumber n) = return e
 evalExpr e@(EString s) = return e
 evalExpr e@(Fun f) = return e
 evalExpr e@(ESpecial n s) = return e
 evalExpr e@(Macro f) = return e
+evalExpr e@ENil = return e
 
 evalExpr expr = throwError $ "Could not evaluate " ++ show expr
 
+-- evalStr evalues expression by expression, thus allowing for definitions
+-- of reader macros
 evalStr :: String -> ComputationM [Value]
 evalStr s = either (\e -> throwError e) evalProgram $ readProgram s
 
@@ -309,13 +337,16 @@ apply (ESpecial _ f) params = f params
 apply other _ = throwError $ "Cannot apply as a function: " ++ show other
 
 expandMacro (Macro (Lambda _ _ _ f)) params = f params
-expandMacro f params = return $ EList params
+expandMacro f params = return $ EList SeqList params
 
 main :: IO ()
 main = repl createEmptyEnv
 
 repl :: Env -> IO ()
-repl env = replCont env ""
+repl env = do
+  -- we emulate a loading of the prelude at the beginning of REPL
+  (value, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))") env
+  replCont st ""
 
 replCont :: Env -> String -> IO ()
 replCont env parsed = do
