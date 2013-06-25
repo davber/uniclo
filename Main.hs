@@ -221,8 +221,7 @@ createEmptyEnv = Env (createBindings [
      return $ EString cont
    )),
    Fun (Lambda "read*" [] ENil $ (\((EString s) : _) -> do
-     let exprs = readProgram s
-     either (\e -> throwError $ "Could not read code due to " ++ show e) (return . (ESeq SeqList)) exprs
+     readProgram s >>= return . ESeq SeqList
    )),
    Fun (Lambda "macroexpand-1" [] ENil $ (\((ESeq _ (m : params) : _)) -> do
      macro <- evalExpr m
@@ -258,6 +257,8 @@ flipNs x = x
 --
 -- The parser, using Parsec
 --
+
+-- The reader consists of parsing and then expanding the forms
 
 -- The tokenizer
 
@@ -303,10 +304,16 @@ parseSet = parseSeq SeqSet
 parseMap = parseSeq SeqMap
 parseExpr = parseList <|> parseVector <|> parseSet <|> parseMap <|> parseAtom
 
-readProgram :: String -> ParseResult
-readProgram input = either (Left . show) Right $ parse parseProgram "clojure" input
-readExpr :: String -> ParseResult
-readExpr input = either (Left . show) (Right . (\x -> [x])) $ parse parseExpr "clojure" input
+parseProgramText :: String -> ParseResult
+parseProgramText input = either (Left . show) Right $ parse parseProgram "clojure" input
+parseExprText :: String -> ParseResult
+parseExprText input = either (Left . show) (Right . (\x -> [x])) $ parse parseExpr "clojure" input
+
+expandProgram :: [Expr] -> ComputationM [Expr]
+expandProgram exprs = return exprs
+
+readProgram :: String -> ComputationM [Expr]
+readProgram text = either throwError  expandProgram $ parseProgramText text
 
 --
 -- Evaluator, yielding (and executing...) a computation
@@ -342,7 +349,7 @@ evalExpr expr = throwError $ "Could not evaluate " ++ show expr
 -- evalStr evalues expression by expression, thus allowing for definitions
 -- of reader macros
 evalStr :: String -> ComputationM [Value]
-evalStr s = either (\e -> throwError e) evalProgram $ readProgram s
+evalStr s = readProgram s >>= evalProgram
 
 isSpecial :: Expr -> Bool
 isSpecial (ESpecial _ _) = True
