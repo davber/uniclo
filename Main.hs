@@ -1,9 +1,9 @@
 module Main where
 
-import Prelude hiding (catch)
+import Prelude hiding (catch, lex)
 import Control.Applicative hiding (many)
 import Text.ParserCombinators.Parsec hiding (State, (<|>))
-import Text.ParserCombinators.Parsec.Token as P hiding (operator)
+import Text.ParserCombinators.Parsec.Token as P
 import Text.Parsec.Numbers as Num
 import Text.ParserCombinators.Parsec.Char
 import Text.Parsec.Language (haskellDef)
@@ -255,32 +255,43 @@ combineEnv env@(Env global local) bindings = env { localEnv = Map.union bindings
 -- The parser, using Parsec
 --
 
-lexer = P.makeTokenParser haskellDef
-eol = (eof >> return ' ') <|> newline
-operator = oneOf "!#$%&|*+-/:<=>?_'"
-parseProgram = whitespace *> many parseSpacedExpr <* eof
-parseSpacedExpr = parseExpr <* whitespace
-parseString = EString <$> (char '"' *> many (noneOf "\"") <* char '"')
+-- The tokenizer
+
+myOperator = oneOf "!#$%&|*+-/:<=>?_'"
+language = P.LanguageDef {
+    commentStart = "",
+    commentEnd = "",
+    commentLine = ";",
+    nestedComments = False,
+    identStart = myOperator <|> letter,
+    identLetter = myOperator <|> alphaNum,
+    opStart = oneOf "~'",
+    opLetter = oneOf "#@",
+    reservedNames = [],
+    reservedOpNames = [],
+    caseSensitive = True
+  }
+lexer = P.makeTokenParser language
+lex = P.lexeme lexer
+parseProgram = P.whiteSpace lexer *> many parsePadExpr <* eof
+parsePadExpr = lex parseExpr
+parseString = EString <$> P.stringLiteral lexer <?> "string"
 parseNumber =  ENumber <$> try Num.parseIntegral <?> "number"
 parseKeyword = EKeyword <$>
                (char ';' *>
-                many (letter <|> digit <|> operator))
+                P.identifier lexer)
                <?> "keyword"
-parseSymbol = ESymbol .* (:) <$>
-              (letter <|> operator) <*>
-              many (letter <|> digit <|> operator)
+parseSymbol = ESymbol <$> P.identifier lexer
               <?> "symbol"
 parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
              <?> "atom"
-parseSeq seqType = ESeq seqType <$> (string (leftDelim seqType) *> many parseSpacedExpr <* string (rightDelim seqType))
+parseSeq seqType = ESeq seqType <$> (string (leftDelim seqType) *> P.whiteSpace lexer *> many parsePadExpr <* string (rightDelim seqType))
                    <?> "list"
 parseList = parseSeq SeqList
 parseVector = parseSeq SeqVector
 parseSet = parseSeq SeqSet
 parseMap = parseSeq SeqMap
 parseExpr = parseList <|> parseVector <|> parseSet <|> parseMap <|> parseAtom
-whitespace = (skipMany (space <|> (comment >> return ' ') <|> char ',')) <?> "whitespace"
-comment = char ';' >> many (noneOf "\n") >> eol
 
 readProgram :: String -> ParseResult
 readProgram input = either (Left . show) Right $ parse parseProgram "clojure" input
@@ -364,7 +375,7 @@ replCont env parsed = do
   putStr $ if length parsed > 0 then ">> " else "> "
   -- three cases: (i) regular line, (ii) continuation line (ending with \) or (iii) REPL command
   line <- getLine
-  let text = parsed ++ line
+  let text = parsed ++ "\n" ++ line
   if endswith "\\" text then replCont env (init text) else replEval env text
 
 replEval :: Env -> String -> IO ()
