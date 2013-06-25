@@ -275,22 +275,27 @@ language = P.LanguageDef {
     caseSensitive = True
   }
 lexer' = P.makeTokenParser language 
-lexer = lexer' { whiteSpace = skipMany1 (char 'f') <|> P.whiteSpace lexer' }
+lexer = lexer' { whiteSpace = skipMany1 (char ',') <|> P.whiteSpace lexer' }
 lex = P.lexeme lexer
-parseProgram = P.whiteSpace lexer *> many parsePadExpr <* eof
+ws = P.whiteSpace lexer
+sym = P.symbol lexer
+ident = P.identifier lexer
+oper = P.operator lexer
+parseProgram = ws *> many parseExpr <* eof
 parsePadExpr = lex parseExpr
 parseString = EString <$> P.stringLiteral lexer <?> "string"
-parseNumber =  ENumber <$> try Num.parseIntegral <?> "number"
+parseNumber =  ENumber <$> (try . lex) Num.parseIntegral <?> "number"
 parseKeyword = flipNs .* EKeyword <$>
-               (char ':' *>
+               lex (char ':' *>
                 P.identifier lexer) <*>
-               optionMaybe (char '/' *> P.identifier lexer)
+               optionMaybe (char '/' *> ident)
                <?> "keyword"
-parseSymbol = ESymbol <$> (P.identifier lexer <|> P.operator lexer)
+parseSymbol = ESymbol <$> lex (ident <|> oper)
               <?> "symbol"
 parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
              <?> "atom"
-parseSeq seqType = ESeq seqType <$> (string (leftDelim seqType) *> P.whiteSpace lexer *> many parsePadExpr <* string (rightDelim seqType))
+parseSeq seqType = ESeq seqType <$> 
+                   (sym (leftDelim seqType) *> many parseExpr <* sym (rightDelim seqType))
                    <?> "list"
 parseList = parseSeq SeqList
 parseVector = parseSeq SeqVector
