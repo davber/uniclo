@@ -9,9 +9,10 @@ import Text.ParserCombinators.Parsec.Char
 import Text.Parsec.Language (haskellDef)
 import Data.Either
 import Data.Maybe
-import Data.Set (fromList, toList)
+import qualified Data.Set as S
 import Data.String.Utils as Str
 import Data.List.Utils
+import Data.List(sort, group)
 import Control.Monad.Error
 import Control.Monad.State
 import Control.Exception hiding (try)
@@ -74,11 +75,15 @@ instance Eq Expr where
   ESpecial s1 _ == ESpecial s2 _ = s1 == s2
   _ == _ = False
 instance Ord Expr where
-  EKeyword s1 < EKeyword s2 = s1 < s2
-  ESymbol s1 < ESymbol s2 = s1 < s2
-  ENumber s1 < ENumber s2 = s1 < s2
-  EString s1 < EString s2 = s1 < s2
-  _ < _ = False
+  EKeyword s1 `compare` EKeyword s2 = s1 `compare` s2
+  ESymbol s1 `compare` ESymbol s2 = s1 `compare` s2
+  ENumber s1 `compare` ENumber s2 = s1 `compare` s2
+  EString s1 `compare` EString s2 = s1 `compare` s2
+  ESeq st1 elems1 `compare` ESeq st2 elems2
+    | st1 == st2 = let comps =  filter (EQ /=) $ zipWith compare elems1 elems2 in
+                   if length comps == 0 then length elems1 `compare` length elems2 else head comps
+    | True = st1 `compare` st2
+  e1 `compare` e2 = show e1 `compare` show e2
 type ParseResult = Either Err [Expr]
 
 --
@@ -300,7 +305,7 @@ evalExpr (ESeq SeqList (f : params)) = do
   apply fun params
 evalExpr (ESeq SeqSet exprs) = do
   vals <- mapM evalExpr exprs
-  return $ (ESeq SeqSet . toList . fromList) vals
+  return $ ESeq SeqSet $ (S.toList . S.fromList) vals
 evalExpr (ESeq seqType exprs) = do
   vals <- mapM evalExpr exprs
   return $ ESeq seqType vals
