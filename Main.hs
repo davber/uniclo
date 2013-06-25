@@ -9,6 +9,7 @@ import Text.ParserCombinators.Parsec.Char
 import Text.Parsec.Language (haskellDef)
 import Data.Either
 import Data.Maybe
+import Data.Set (fromList, toList)
 import Data.String.Utils as Str
 import Data.List.Utils
 import Control.Monad.Error
@@ -47,12 +48,12 @@ rightDelim SeqVector = "]"
 rightDelim SeqSet = "}"
 rightDelim SeqMap = "}"
 
-data Expr = EKeyword String | ESymbol String | EList SeqType [Expr] | ENumber Integer |
+data Expr = EKeyword String | ESymbol String | ESeq SeqType [Expr] | ENumber Integer |
             EString String | EBool Bool | ENil | Fun Lambda | Macro Lambda | ESpecial String Function
 instance Show Expr where
   show (EKeyword s) = ":" ++ s
   show (ESymbol s) = s
-  show (EList seqType es) = leftDelim seqType ++ (Str.join " " $ map show es) ++ rightDelim seqType
+  show (ESeq seqType es) = leftDelim seqType ++ (Str.join " " $ map show es) ++ rightDelim seqType
   show (ENumber num) = show num
   show (EString s) = "\"" ++ s ++ "\""
   show (EBool b) = if b then "true" else "false"
@@ -63,7 +64,7 @@ instance Show Expr where
 instance Eq Expr where
   EKeyword s1 == EKeyword s2 = s1 == s2
   ESymbol s1 == ESymbol s2 = s1 == s2
-  EList st1 e1 == EList st2 e2 = st1 == st2 &&
+  ESeq st1 e1 == ESeq st2 e2 = st1 == st2 &&
     all (\(x1, x2) -> x1 == x2) (zip e1 e2)
   ENumber num1 == ENumber num2 = num1 == num2
   EString s1 == EString s2 = s1 == s2
@@ -177,8 +178,8 @@ createEmptyEnv = Env (createBindings [
       return evalParam),
    ESpecial "quote" (\(param : _) -> do
       return $ param),
-   ESpecial "lambda" (\((EList _ params) : body) -> do
-      let doBody = (EList SeqList ((ESymbol "do") : body))
+   ESpecial "lambda" (\((ESeq _ params) : body) -> do
+      let doBody = (ESeq SeqList ((ESymbol "do") : body))
       return $ Fun $ Lambda "lambda" params doBody (\actuals -> do
         e <- get
         let local = localEnv e
@@ -188,8 +189,8 @@ createEmptyEnv = Env (createBindings [
         val <- evalExpr doBody
         setLocalEnv local        
         return val)),
-   ESpecial "macro" (\((EList _ params) : body) -> do
-      let doBody = (EList SeqList ((ESymbol "do") : body))
+   ESpecial "macro" (\((ESeq _ params) : body) -> do
+      let doBody = (ESeq SeqList ((ESymbol "do") : body))
       return $ Macro $ Lambda "macro" params doBody (\actuals -> do
         e <- get
         let local = localEnv e
@@ -205,7 +206,7 @@ createEmptyEnv = Env (createBindings [
    Fun (Lambda "eval" [] ENil $ (\(param : _) ->
      evalExpr param
    )),
-   Fun (Lambda "eval*" [] ENil $ (\((EList _ exprs) : _) -> do
+   Fun (Lambda "eval*" [] ENil $ (\((ESeq _ exprs) : _) -> do
      values <- mapM evalExpr exprs
      return $ if length values == 0 then ENil else last values
    )),
@@ -215,14 +216,14 @@ createEmptyEnv = Env (createBindings [
    )),
    Fun (Lambda "read*" [] ENil $ (\((EString s) : _) -> do
      let exprs = readProgram s
-     either (\e -> throwError $ "Could not read code due to " ++ show e) (return . (EList SeqList)) exprs
+     either (\e -> throwError $ "Could not read code due to " ++ show e) (return . (ESeq SeqList)) exprs
    )),
-   Fun (Lambda "macroexpand-1" [] ENil $ (\((EList _ (m : params) : _)) -> do
+   Fun (Lambda "macroexpand-1" [] ENil $ (\((ESeq _ (m : params) : _)) -> do
      macro <- evalExpr m
      apply macro params)),
-   Fun (Lambda "cons" [] ENil $ (\(f : (EList _ r) : _) -> return $ EList SeqList (f : r))),
-   Fun (Lambda "first" [] ENil $ (\((EList _ (f: _)) : _) -> return f)),
-   Fun (Lambda "rest" [] ENil $ (\((EList seqType (_: r)) : _) -> return $ EList seqType r)),
+   Fun (Lambda "cons" [] ENil $ (\(f : (ESeq _ r) : _) -> return $ ESeq SeqList (f : r))),
+   Fun (Lambda "first" [] ENil $ (\((ESeq _ (f: _)) : _) -> return f)),
+   Fun (Lambda "rest" [] ENil $ (\((ESeq seqType (_: r)) : _) -> return $ ESeq seqType r)),
    Fun (Lambda "+" [] ENil $ numHandler (foldl1 (+))),
    Fun (Lambda "-" [] ENil $ numHandler (\(n : ns) -> if ns==[] then - n else (foldl (-) n ns))),
    Fun (Lambda "*" [] ENil $ numHandler (foldl1 (*))),
@@ -230,7 +231,7 @@ createEmptyEnv = Env (createBindings [
    Fun (Lambda "mod" [] ENil $ numHandler (foldl1 mod)),
    Fun (Lambda "<" [] ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 < p2))),
    Fun (Lambda "=" [] ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 == p2))),
-   Fun (Lambda "list" [] ENil $ (\params -> return $ EList SeqList params)),
+   Fun (Lambda "list" [] ENil $ (\params -> return $ ESeq SeqList params)),
    ENil,
    EBool False,
    EBool True])
@@ -266,11 +267,13 @@ parseSymbol = ESymbol .* (:) <$>
               <?> "symbol"
 parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
              <?> "atom"
-parseSeq seqType = EList seqType <$> (string (leftDelim seqType) *> many parseSpacedExpr <* string (rightDelim seqType))
+parseSeq seqType = ESeq seqType <$> (string (leftDelim seqType) *> many parseSpacedExpr <* string (rightDelim seqType))
                    <?> "list"
 parseList = parseSeq SeqList
 parseVector = parseSeq SeqVector
-parseExpr = parseAtom <|> parseList <|> parseVector
+parseSet = parseSeq SeqSet
+parseMap = parseSeq SeqMap
+parseExpr = parseList <|> parseVector <|> parseSet <|> parseMap <|> parseAtom
 whitespace = (skipMany (space <|> (comment >> return ' ') <|> char ',')) <?> "whitespace"
 comment = char ';' >> many (noneOf "\n") >> eol
 
@@ -291,13 +294,16 @@ evalExpr (EKeyword key) = return (EKeyword key)
 evalExpr (ESymbol sym) = do env <- get
                             let value = getVar env sym
                             maybe (throwError $ "Symbol " ++ sym ++ " had no value") return value
-evalExpr e@(EList _ []) = return e
-evalExpr (EList SeqList (f : params)) = do
+evalExpr e@(ESeq _ []) = return e
+evalExpr (ESeq SeqList (f : params)) = do
   fun <- evalExpr f
   apply fun params
-evalExpr (EList seqType exprs) = do
+evalExpr (ESeq SeqSet exprs) = do
   vals <- mapM evalExpr exprs
-  return $ EList seqType vals
+  return $ (ESeq SeqSet . toList . fromList) vals
+evalExpr (ESeq seqType exprs) = do
+  vals <- mapM evalExpr exprs
+  return $ ESeq seqType vals
 evalExpr e@(ENumber n) = return e
 evalExpr e@(EString s) = return e
 evalExpr e@(Fun f) = return e
@@ -337,7 +343,7 @@ apply (ESpecial _ f) params = f params
 apply other _ = throwError $ "Cannot apply as a function: " ++ show other
 
 expandMacro (Macro (Lambda _ _ _ f)) params = f params
-expandMacro f params = return $ EList SeqList params
+expandMacro f params = return $ ESeq SeqList params
 
 main :: IO ()
 main = repl createEmptyEnv
