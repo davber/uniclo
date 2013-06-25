@@ -1,7 +1,7 @@
 module Main where
 
 import Prelude hiding (catch, lex)
-import Control.Applicative hiding (many)
+import Control.Applicative hiding (many, optional)
 import Text.ParserCombinators.Parsec hiding (State, (<|>))
 import Text.ParserCombinators.Parsec.Token as P
 import Text.Parsec.Numbers as Num
@@ -49,10 +49,11 @@ rightDelim SeqVector = "]"
 rightDelim SeqSet = "}"
 rightDelim SeqMap = "}"
 
-data Expr = EKeyword String | ESymbol String | ESeq SeqType [Expr] | ENumber Integer |
+data Expr = EKeyword String (Maybe String) | ESymbol String | ESeq SeqType [Expr] | ENumber Integer |
             EString String | EBool Bool | ENil | Fun Lambda | Macro Lambda | ESpecial String Function
 instance Show Expr where
-  show (EKeyword s) = ":" ++ s
+  show (EKeyword s Nothing) = ":" ++ s
+  show (EKeyword s (Just ns)) = ":" ++ ns ++ "/" ++ s
   show (ESymbol s) = s
   show (ESeq seqType es) = leftDelim seqType ++ (Str.join " " $ map show es) ++ rightDelim seqType
   show (ENumber num) = show num
@@ -63,7 +64,7 @@ instance Show Expr where
   show (Macro lambda) = show lambda
   show (ESpecial s _) = s
 instance Eq Expr where
-  EKeyword s1 == EKeyword s2 = s1 == s2
+  EKeyword ns1 s1 == EKeyword ns2 s2 = ns1 == ns2 && s1 == s2
   ESymbol s1 == ESymbol s2 = s1 == s2
   ESeq st1 e1 == ESeq st2 e2 = st1 == st2 &&
     all (\(x1, x2) -> x1 == x2) (zip e1 e2)
@@ -74,14 +75,14 @@ instance Eq Expr where
   Fun (Lambda n1 p1 e1 _) == Fun (Lambda n2 p2 e2 _) = n1 == n2 && e1 == e2 && p1 == p2
   ESpecial s1 _ == ESpecial s2 _ = s1 == s2
   _ == _ = False
+lexico comps = if length diffs == 0 then EQ else head diffs where diffs = filter (/= EQ) comps
 instance Ord Expr where
-  EKeyword s1 `compare` EKeyword s2 = s1 `compare` s2
+  EKeyword ns1 s1 `compare` EKeyword ns2 s2 = lexico [ns1 `compare` ns2, s1 `compare` s2]
   ESymbol s1 `compare` ESymbol s2 = s1 `compare` s2
   ENumber s1 `compare` ENumber s2 = s1 `compare` s2
   EString s1 `compare` EString s2 = s1 `compare` s2
   ESeq st1 elems1 `compare` ESeq st2 elems2
-    | st1 == st2 = let comps =  filter (EQ /=) $ zipWith compare elems1 elems2 in
-                   if length comps == 0 then length elems1 `compare` length elems2 else head comps
+    | st1 == st2 = lexico $ zipWith compare elems1 elems2 ++ [length elems1 `compare` length elems2]
     | True = st1 `compare` st2
   e1 `compare` e2 = show e1 `compare` show e2
 type ParseResult = Either Err [Expr]
@@ -251,37 +252,41 @@ createEmptyState = put createEmptyEnv >> return ENil
 combineEnv :: Env -> Bindings -> Env
 combineEnv env@(Env global local) bindings = env { localEnv = Map.union bindings local }
 
+flipNs (EKeyword ns (Just s)) = EKeyword s (Just ns)
+flipNs x = x
+
 --
 -- The parser, using Parsec
 --
 
 -- The tokenizer
 
-myOperator = oneOf "!#$%&|*+-/:<=>?_'"
 language = P.LanguageDef {
     commentStart = "",
     commentEnd = "",
     commentLine = ";",
     nestedComments = False,
-    identStart = myOperator <|> letter,
-    identLetter = myOperator <|> alphaNum,
-    opStart = oneOf "~'",
-    opLetter = oneOf "#@",
+    identStart = oneOf "!#$%&|*+-/<=>?_" <|> letter,
+    identLetter = oneOf "!#$%&|*+-<=>?_'" <|> alphaNum,
+    opStart = oneOf "~#",
+    opLetter = oneOf "@",
     reservedNames = [],
     reservedOpNames = [],
     caseSensitive = True
   }
-lexer = P.makeTokenParser language
+lexer' = P.makeTokenParser language 
+lexer = lexer' { whiteSpace = skipMany1 (char 'f') <|> P.whiteSpace lexer' }
 lex = P.lexeme lexer
 parseProgram = P.whiteSpace lexer *> many parsePadExpr <* eof
 parsePadExpr = lex parseExpr
 parseString = EString <$> P.stringLiteral lexer <?> "string"
 parseNumber =  ENumber <$> try Num.parseIntegral <?> "number"
-parseKeyword = EKeyword <$>
-               (char ';' *>
-                P.identifier lexer)
+parseKeyword = flipNs .* EKeyword <$>
+               (char ':' *>
+                P.identifier lexer) <*>
+               optionMaybe (char '/' *> P.identifier lexer)
                <?> "keyword"
-parseSymbol = ESymbol <$> P.identifier lexer
+parseSymbol = ESymbol <$> (P.identifier lexer <|> P.operator lexer)
               <?> "symbol"
 parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
              <?> "atom"
@@ -306,7 +311,7 @@ evalProgram :: [Expr] -> ComputationM [Value]
 evalProgram exprs = mapM evalExpr exprs
 
 evalExpr :: Expr -> Computation
-evalExpr (EKeyword key) = return (EKeyword key)
+evalExpr e@(EKeyword _ _) = return e
 evalExpr (ESymbol sym) = do env <- get
                             let value = getVar env sym
                             maybe (throwError $ "Symbol " ++ sym ++ " had no value") return value
