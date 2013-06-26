@@ -271,8 +271,10 @@ createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
       ),
    ESpecial "lambda" (\(s : body) -> do
       let doBody = (EList (ESymbol "do" : body))
+      ce <- get
       return $ Fun $ Lambda "lambda" s doBody (\actuals -> do
         e <- get
+        setLocalEnv $ localEnv ce
         alright <- unifyState s $ EList actuals
         if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
         val <- evalExpr doBody
@@ -280,8 +282,10 @@ createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
         return val)),
    ESpecial "macro" (\(s : body) -> do
       let doBody = (EList (ESymbol "do": body))
+      ce <- get
       return $ Macro $ Lambda "macro" s doBody (\actuals -> do
         e <- get
+        setLocalEnv $ localEnv ce
         alright <- unifyState s $ EList actuals
         if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
         expanded <- evalExpr doBody
