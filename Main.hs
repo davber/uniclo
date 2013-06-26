@@ -108,7 +108,7 @@ instance Show Expr where
   show (Fun lambda) = show lambda
   show (Macro lambda) = show lambda
   show (ESpecial s _) = s
-  show (EMap m) = "{ " ++ Str.join ", " (map (\(k,v) -> show k ++ ": " ++ show v) $ M.assocs m) ++ " }"
+  show (EMap m) = "{" ++ Str.join ", " (map (\(k,v) -> show k ++ " " ++ show v) $ M.assocs m) ++ "}"
   show e | isSeq e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
     elems = seqElems e
 instance Eq Expr where
