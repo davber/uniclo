@@ -460,9 +460,11 @@ evalExpr e@(EKeyword _ _) = return e
 evalExpr (ESymbol sym) = do env <- get
                             let value = getVar env sym
                             maybe (throwError $ "Symbol " ++ sym ++ " had no value") return value
-evalExpr (EList (f : params)) = do
+evalExpr e@(EList (f : params)) = do
   fun <- evalExpr f
-  apply fun params
+  res <- apply fun params
+  printTrace $ "Reduction: " ++ show e ++ " ==> " ++ show res
+  return res
 evalExpr e@(ENumber n) = return e
 evalExpr e@(EString s) = return e
 evalExpr e@(Fun f) = return e
@@ -520,7 +522,7 @@ expandMacro1 e = return e
 expandMacro :: Expr -> Computation
 expandMacro e = do
   exp <- expandMacro1 e
-  printTrace $ "Expanded one step, from " ++ show e ++ " to " ++ show exp
+  printTrace $ "Expansion: " ++ show e ++ " ==> " ++ show exp
   if exp == e then return exp else expandMacro exp
 
 main :: IO ()
