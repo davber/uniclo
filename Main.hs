@@ -278,7 +278,7 @@ createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
         e <- get
         setLocalEnv $ localEnv ce
         alright <- unifyState s $ EList actuals
-        if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
+        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         val <- evalExpr doBody
         setLocalEnv $ localEnv e
         return val)),
