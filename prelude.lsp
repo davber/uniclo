@@ -19,10 +19,8 @@
 (defn into [dest from] (apply conj dest (seq from)))
 (def empty? (comp not seq))
 (defn map [f coll] (if (empty? coll) nil (cons (f (first coll)) (map f (rest coll)))))
+(def second (comp first rest))
 
 ;; integrating with runtime/environment: load
 
 (defn load [path] (eval* (read* (slurp path))))
-
-
-
