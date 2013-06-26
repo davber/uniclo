@@ -11,8 +11,8 @@
 ;; boolean stuff: boolean, or, and, not
 (defmacro or [x y] (list (quote if) x x y))
 (defmacro and [x y] (list (quote if) x y x))
-(defn boolean [x] (if x true false))
 (defn not [x] (if x false true))
+(def boolean (comp not not))
 
 ;; sequence operations: into, empty?, map
 
