@@ -10,6 +10,7 @@ import Text.Parsec.Language (haskellDef)
 import Data.Either
 import Data.Maybe
 import qualified Data.Set as S
+import qualified Data.Map as M
 import Data.String.Utils as Str
 import Data.List.Utils
 import Data.List(sort, group)
@@ -35,9 +36,9 @@ name _ = Nothing
 --
 
 type Function = [Param] -> Computation
-data Lambda = Lambda String [Param] Expr Function
+data Lambda = Lambda String Expr Expr Function
 instance Show Lambda where
-  show (Lambda name params expr _) = name ++ "[" ++ show expr ++ "]"
+  show (Lambda name params expr _) = name ++ "[\\" ++ show params ++ " --> " ++ show expr ++ "]"
 type Param = Expr
 data SeqType = SeqList | SeqVector | SeqMap | SeqSet deriving (Show, Read, Eq, Ord)
 leftDelim SeqList = "("
@@ -49,31 +50,76 @@ rightDelim SeqVector = "]"
 rightDelim SeqSet = "}"
 rightDelim SeqMap = "}"
 
-data Expr = EKeyword String (Maybe String) | ESymbol String | ESeq SeqType [Expr] | ENumber Integer |
-            EString String | EBool Bool | ENil | Fun Lambda | Macro Lambda | ESpecial String Function
+isSeq :: Expr -> Bool
+isSeq (EList _) = True
+isSeq (EVector _) = True
+isSeq (ESet _) = True
+isSeq (EMap _) = True
+isSeq (EString _) = True
+isSeq _ = False
+
+seqType (EList _) = SeqList
+seqType (EVector _) = SeqVector
+seqType (ESet _) = SeqSet
+seqType (EMap _) = SeqMap
+
+seqElems :: Expr -> [Expr]
+seqElems (EList es) = es
+seqElems (EVector es) = es
+seqElems (ESet s) = S.elems s
+-- NOTE: the sequence from a map is actually a flat list with every odd element key and
+-- even element value
+seqElems (EMap m) = M.elems m
+seqElems (EString s) = map (\c -> EString [c]) s
+seqElems x = [x]
+
+pairs :: [a] -> [(a, a)]
+pairs [] = []
+pairs (a : b : r) = (a,b) : pairs r
+pairs [a] = [(a,a)]
+
+makeSeq :: SeqType -> [Expr] -> Expr
+makeSeq SeqList = EList
+makeSeq SeqSet = ESet . S.fromList
+makeSeq SeqVector = EVector
+-- NOTE: the sequence to a map is actually a flat list with every odd element key and even value
+makeSeq SeqMap = EMap . M.fromList . pairs
+
+conj :: Expr -> Expr -> Expr
+conj (EList s) e = EList (e:s)
+conj (EVector s) e = EVector $ s ++ [e] -- NOTE: quite inefficient!
+-- NOTE: conj:ing to a map requires a seqable element with at least two
+-- elements, being the new key and value to be added
+conj (EMap m) e = let (k:v:_) = seqElems e in EMap $ M.insert k v m
+conj (ESet s) e = ESet $ S.insert e s
+
+data Expr = EKeyword String (Maybe String) | ESymbol String | ENumber Integer |
+            EString String | EBool Bool | ENil | Fun Lambda | Macro Lambda | ESpecial String Function | EList [Expr] | EVector [Expr] | ESet (S.Set Expr) | EMap (M.Map Expr Expr)
 instance Show Expr where
   show (EKeyword s Nothing) = ":" ++ s
   show (EKeyword s (Just ns)) = ":" ++ ns ++ "/" ++ s
   show (ESymbol s) = s
-  show (ESeq seqType es) = leftDelim seqType ++ (Str.join " " $ map show es) ++ rightDelim seqType
-  show (ENumber num) = show num
   show (EString s) = "\"" ++ s ++ "\""
+  show (ENumber num) = show num
   show (EBool b) = if b then "true" else "false"
   show ENil = "nil"
   show (Fun lambda) = show lambda
   show (Macro lambda) = show lambda
   show (ESpecial s _) = s
+  show (EMap m) = "{ " ++ Str.join ", " (map (\(k,v) -> show k ++ ": " ++ show v) $ M.assocs m) ++ " }"
+  show e | isSeq e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
+    elems = seqElems e
 instance Eq Expr where
   EKeyword ns1 s1 == EKeyword ns2 s2 = ns1 == ns2 && s1 == s2
-  ESymbol s1 == ESymbol s2 = s1 == s2
-  ESeq st1 e1 == ESeq st2 e2 = st1 == st2 &&
-    all (\(x1, x2) -> x1 == x2) (zip e1 e2)
+  ESymbol s1 == ESymbol s2 = s1 == s2 
   ENumber num1 == ENumber num2 = num1 == num2
   EString s1 == EString s2 = s1 == s2
   EBool b1 == EBool b2 = b1 == b2
   ENil == ENil = True
   Fun (Lambda n1 p1 e1 _) == Fun (Lambda n2 p2 e2 _) = n1 == n2 && e1 == e2 && p1 == p2
   ESpecial s1 _ == ESpecial s2 _ = s1 == s2
+  seq1 == seq2 | isSeq seq1 && isSeq seq2 =
+    seqType seq1 == seqType seq2 && seqElems seq1 == seqElems seq2
   _ == _ = False
 lexico comps = if length diffs == 0 then EQ else head diffs where diffs = filter (/= EQ) comps
 instance Ord Expr where
@@ -81,11 +127,20 @@ instance Ord Expr where
   ESymbol s1 `compare` ESymbol s2 = s1 `compare` s2
   ENumber s1 `compare` ENumber s2 = s1 `compare` s2
   EString s1 `compare` EString s2 = s1 `compare` s2
-  ESeq st1 elems1 `compare` ESeq st2 elems2
-    | st1 == st2 = lexico $ zipWith compare elems1 elems2 ++ [length elems1 `compare` length elems2]
-    | True = st1 `compare` st2
+  seq1 `compare` seq2 | isSeq seq1 && isSeq seq2 =
+    (seqType seq1, seqElems seq1) `compare` (seqType seq2, seqElems seq2)
   e1 `compare` e2 = show e1 `compare` show e2
 type ParseResult = Either Err [Expr]
+
+exprType :: Expr -> String
+exprType (Fun {}) = "fun"
+exprType (EKeyword {}) = "keyword"
+exprType (ENumber {}) = "number"
+exprType (ESymbol {}) = "symbol"
+exprType (EString {}) = "string"
+exprType (ENil {}) = "nil"
+exprType (ESpecial {}) = "special"
+exprType e | isSeq e = "seq"
 
 --
 -- Environment
@@ -134,6 +189,20 @@ printBindings bindings = do
   let pairs = Map.toList bindings
   mapM_ (\(k, v) -> putStr ("'" ++ k ++ "' = ") >> print v) pairs
 
+-- Unify two tems, with bindings to the left, yielding the new binding,
+-- if succeding
+unify :: Expr -> Expr -> Bindings -> (Maybe Bindings)
+unify (ESymbol name) value b = return $ Map.insert name value b
+unify s1 s2 b | isSeq s1 && isSeq s2 = unifyList (seqElems s1) (seqElems s2) b
+unify s1 s2 b | s1 == s2 = Just b
+              | True = Nothing
+
+unifyList :: [Expr] -> [Expr] -> Bindings -> (Maybe Bindings)
+unifyList [] [] = return
+unifyList (ESymbol "&" : rest : _) other = unify rest (EList other)
+unifyList (f1:r1) (f2:r2) = (\b -> unify f1 f2 b >>= unifyList r1 r2)
+unifyList _ _ = (\_ -> Nothing)
+
 -- Computations can either (i) yield a value or (ii) yield an error
 -- AND can also interact with the environment
 -- We encapsulate this by a three-layer monadic pie:
@@ -173,10 +242,10 @@ createBindings keys values = foldl (\e (k,v) -> Map.insert k v e) Map.empty $ zi
 createEmptyEnv :: Env
 createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
   -- specials
-  "def", "do", "if", "dump", "quote", "lambda", "macro",
+  "def", "do", "if", "dump", "quote", "unify", "lambda", "macro",
   -- primitives
-  "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
-  "cons", "first", "rest",
+  "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
+  "cons", "first", "rest", "type", "seq?", "seq", "conj",
   "+", "-", "*", "div", "mod", "<", "=", "list", "nil", "false", "true",
   "trace"]
   [ESpecial "def" (\((ESymbol var):value:[]) -> do
@@ -195,64 +264,76 @@ createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
       return ENil),
    ESpecial "quote" (\(param : _) -> do
       return $ param),
-   ESpecial "lambda" (\((ESeq _ params) : body) -> do
-      let doBody = (ESeq SeqList ((ESymbol "do") : body))
-      return $ Fun $ Lambda "lambda" params doBody (\actuals -> do
+   ESpecial "unify" (\(formal : actual : body) -> do
+      let doBody = (EList (ESymbol "do" : body))
+      ok <- unifyState formal actual
+      if ok then evalExpr doBody else return ENil
+      ),
+   ESpecial "lambda" (\(s : body) -> do
+      let doBody = (EList (ESymbol "do" : body))
+      return $ Fun $ Lambda "lambda" s doBody (\actuals -> do
         e <- get
-        let local = localEnv e
-        let params' = map ((fromMaybe "_") . name) params
-        let e' = combineEnv e (createBindings params' actuals)
-        put e'
+        alright <- unifyState s $ EList actuals
+        if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
         val <- evalExpr doBody
-        setLocalEnv local        
+        setLocalEnv $ localEnv e
         return val)),
-   ESpecial "macro" (\((ESeq _ params) : body) -> do
-      let doBody = (ESeq SeqList ((ESymbol "do") : body))
-      return $ Macro $ Lambda "macro" params doBody (\actuals -> do
+   ESpecial "macro" (\(s : body) -> do
+      let doBody = (EList (ESymbol "do": body))
+      return $ Macro $ Lambda "macro" s doBody (\actuals -> do
         e <- get
-        let local = localEnv e
-        let params' = map ((fromMaybe "_") . name) params
-        let e' = combineEnv e (createBindings params' actuals)
-        put e'
+        alright <- unifyState s $ EList actuals
+        if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
         expanded <- evalExpr doBody
-        setLocalEnv local
+        setLocalEnv . localEnv $ e
         return expanded)),
-   Fun (Lambda "print" [] ENil (\params -> do
-      liftIO $ putStr $ Str.join "" $ map printShow params
+   Fun (Lambda "apply" (EList [ESymbol "f", ESymbol "args..."]) ENil (\(f : params) ->
+      let vals = init params ++ (seqElems $ last params) in
+      apply f vals)),
+   Fun (Lambda "print" (EList [ESymbol "args..."]) ENil (\params -> do
+      liftIO . putStr . Str.join "" $ map printShow params
       return ENil)),
-   Fun (Lambda "eval" [] ENil $ (\(param : _) ->
+   Fun (Lambda "eval" (EList [ESymbol "form"]) ENil $ (\(param : _) ->
      evalExpr param
    )),
-   Fun (Lambda "eval*" [] ENil $ (\((ESeq _ exprs) : _) -> do
+   Fun (Lambda "eval*" (EList [ESymbol "forms"]) ENil $ (\(s : _) -> do
+     let exprs = seqElems s
      values <- mapM evalExpr exprs
      return $ if length values == 0 then ENil else last values
    )),
-   Fun (Lambda "slurp" [] ENil $ (\((EString n) : _) -> do
+   Fun (Lambda "slurp" (EList [ESymbol "path"]) ENil $ (\((EString n) : _) -> do
      cont <- liftIO $ tryReadFile n
      return $ EString cont
    )),
-   Fun (Lambda "read*" [] ENil $ (\((EString s) : _) -> do
-     readProgram s >>= return . ESeq SeqList
+   Fun (Lambda "read*" (EList [ESymbol "text"]) ENil $ (\((EString s) : _) -> do
+     readProgram s >>= return . EList
    )),
-   Fun (Lambda "macroexpand-1" [] ENil $ (\(e : _) ->
+   Fun (Lambda "macroexpand-1" (EList [ESymbol "form"]) ENil $ (\(e : _) ->
      expandMacro1 e)),
-   Fun (Lambda "macroexpand" [] ENil $ (\(e : _) ->
+   Fun (Lambda "macroexpand" (EList [ESymbol "form"]) ENil $ (\(e : _) ->
      expandMacro e)),
-   Fun (Lambda "cons" [] ENil $ (\(f : (ESeq _ r) : _) -> return $ ESeq SeqList (f : r))),
-   Fun (Lambda "first" [] ENil $ (\((ESeq _ (f: _)) : _) -> return f)),
-   Fun (Lambda "rest" [] ENil $ (\((ESeq seqType (_: r)) : _) -> return $ ESeq seqType r)),
-   Fun (Lambda "+" [] ENil $ numHandler (foldl (+) 0)),
-   Fun (Lambda "-" [] ENil $ numHandler (\(n : ns) -> if ns==[] then - n else (foldl (-) n ns))),
-   Fun (Lambda "*" [] ENil $ numHandler (foldl (*) 1)),
-   Fun (Lambda "div" [] ENil $ numHandler (foldl1 div)),
-   Fun (Lambda "mod" [] ENil $ numHandler (foldl1 mod)),
-   Fun (Lambda "<" [] ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 < p2))),
-   Fun (Lambda "=" [] ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 == p2))),
-   Fun (Lambda "list" [] ENil $ (\params -> return $ ESeq SeqList params)),
+   Fun (Lambda "cons" (EList [ESymbol "elem", ESymbol "seq"]) ENil $ (\(f : s : _) -> return $ EList (f : seqElems s))),
+   Fun (Lambda "first" (EList [ESymbol "seq"]) ENil $ (\(s : _) -> return . head . seqElems $ s)),
+   Fun (Lambda "rest" (EList [ESymbol "seq"]) ENil $ (\(s : _) -> return . EList . tail . seqElems $ s)),
+   Fun (Lambda "type" (EList [ESymbol "x"]) ENil $ (\(f : _) -> return . EString . exprType $ f)),
+   Fun (Lambda "seq?" (EList [ESymbol "x"]) ENil $ (\(s : _) -> return . EBool $ isSeq s)),
+   -- NOTE: seq on a map creates a FLAT list of keys and values interleaved!
+   Fun (Lambda "seq" (EList [ESymbol "seq"]) ENil $ (\(s : _) -> return . EList . seqElems $ s)),
+   -- conj can add many elements, where maps expects sequences of key and value
+   -- for each added element
+   Fun (Lambda "conj" (EList [ESymbol "seq", ESymbol "elem"]) ENil $ (\(s : adding) -> return $ foldl conj s adding)),
+   Fun (Lambda "+" (EList [ESymbol "nums..."]) ENil $ numHandler (foldl (+) 0)),
+   Fun (Lambda "-" (EList [ESymbol "nums..."]) ENil $ numHandler (\(n : ns) -> if ns==[] then - n else (foldl (-) n ns))),
+   Fun (Lambda "*" (EList [ESymbol "nums..."]) ENil $ numHandler (foldl (*) 1)),
+   Fun (Lambda "div" (EList [ESymbol "nums..."]) ENil $ numHandler (foldl1 div)),
+   Fun (Lambda "mod" (EList [ESymbol "num1", ESymbol "num2"]) ENil $ numHandler (foldl1 mod)),
+   Fun (Lambda "<" (EList [ESymbol "x1", ESymbol "x2"]) ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 < p2))),
+   Fun (Lambda "=" (EList [ESymbol "x1", ESymbol "x2"]) ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 == p2))),
+   Fun (Lambda "list" (EList [ESymbol "elems..."]) ENil $ (\params -> return $ EList params)),
    ENil,
    EBool False,
    EBool True,
-   Fun (Lambda "trace" [] ENil $ (\(flag : _) ->
+   Fun (Lambda "trace" (EList [ESymbol "flag"]) ENil $ (\(flag : _) ->
      (setTrace $ isTruthy flag) >>= return . EBool))],
    localEnv = createEmptyBindings }
 
@@ -265,8 +346,19 @@ createEmptyState = put createEmptyEnv >> return ENil
 combineEnv :: Env -> Bindings -> Env
 combineEnv e bindings = e { localEnv = Map.union bindings $ localEnv e }
 
+unifyEnv :: Env -> Expr -> Expr -> Maybe Env
+unifyEnv e e1 e2 = unify e1 e2 createEmptyBindings >>= return . (combineEnv e)
+
 flipNs (EKeyword ns (Just s)) = EKeyword s (Just ns)
 flipNs x = x
+
+-- Try unification, yielding a flag if bindings were created
+unifyState :: Expr -> Expr -> ComputationM Bool
+unifyState e1 e2 = do
+  e <- get
+  let (e', flag) = maybe (e, False) (\env -> (env, True)) $ unifyEnv e e1 e2
+  put e'
+  return flag
 
 --
 -- The parser, using Parsec
@@ -309,7 +401,7 @@ parseSymbol = ESymbol <$> lex (ident <|> oper)
               <?> "symbol"
 parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
              <?> "atom"
-parseSeq seqType = ESeq seqType <$> 
+parseSeq seqType = makeSeq seqType <$> 
                    (sym (leftDelim seqType) *> many parseExpr <* sym (rightDelim seqType))
                    <?> "list"
 parseList = parseSeq SeqList
@@ -341,23 +433,18 @@ evalExpr e@(EKeyword _ _) = return e
 evalExpr (ESymbol sym) = do env <- get
                             let value = getVar env sym
                             maybe (throwError $ "Symbol " ++ sym ++ " had no value") return value
-evalExpr e@(ESeq _ []) = return e
-evalExpr (ESeq SeqList (f : params)) = do
+evalExpr (EList (f : params)) = do
   fun <- evalExpr f
   apply fun params
-evalExpr (ESeq SeqSet exprs) = do
-  vals <- mapM evalExpr exprs
-  return $ ESeq SeqSet $ (S.toList . S.fromList) vals
-evalExpr (ESeq seqType exprs) = do
-  vals <- mapM evalExpr exprs
-  return $ ESeq seqType vals
 evalExpr e@(ENumber n) = return e
 evalExpr e@(EString s) = return e
 evalExpr e@(Fun f) = return e
 evalExpr e@(ESpecial n s) = return e
 evalExpr e@(Macro f) = return e
 evalExpr e@ENil = return e
-
+evalExpr e | isSeq e = do
+  vals <- mapM evalExpr $ seqElems e
+  return $ makeSeq (seqType e) vals
 evalExpr expr = throwError $ "Could not evaluate " ++ show expr
 
 -- evalStr evalues expression by expression, thus allowing for definitions
@@ -394,13 +481,13 @@ isMacro (Macro _) = True
 isMacro _ = False
 
 expandMacro1 :: Expr -> Computation
-expandMacro1 e@(ESeq SeqList ((Macro (Lambda n _ _ f)) : params)) =
+expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) =
   f params
-expandMacro1 e@(ESeq SeqList (f : params)) = do
+expandMacro1 e@(EList (f : params)) = do
   env <- get
   (fval, newSt) <- lift $ lift $ runStateT (runErrorT $ evalExpr f) env
   put newSt
-  either (\err -> return e) (\val -> if val == f || not (isMacro val) then return e else expandMacro1 (ESeq SeqList (val : params))) fval
+  either (\err -> return e) (\val -> if val == f || not (isMacro val) then return e else expandMacro1 (EList (val : params))) fval
 expandMacro1 e = return e
 
 expandMacro :: Expr -> Computation
