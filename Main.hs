@@ -50,13 +50,22 @@ rightDelim SeqVector = "]"
 rightDelim SeqSet = "}"
 rightDelim SeqMap = "}"
 
+-- is the expression a proper sequence already?
+-- NOTE: expressions can be seqable, turned into a sequence by seqElems
 isSeq :: Expr -> Bool
 isSeq (EList _) = True
 isSeq (EVector _) = True
 isSeq (ESet _) = True
-isSeq (EMap _) = True
-isSeq (EString _) = True
+isSeq (EMap _) = False
+isSeq (EString _) = False
 isSeq _ = False
+
+-- is the expression comvertible into a sequence, i.e., seqable?
+isSeqable :: Expr -> Bool
+isSeqable e | isSeq e = True
+isSeqable (EString _) = True
+isSeqable (EMap _) = True
+isSeqable _ = False
 
 seqType (EList _) = SeqList
 seqType (EVector _) = SeqVector
@@ -65,26 +74,31 @@ seqType (EMap _) = SeqMap
 
 seqElems :: Expr -> [Expr]
 seqElems (EList es) = es
--- NOTE: the elements are stored in reverse inside the construct
+-- NOTE: the elements are stored in reverse inside the vector construct
 seqElems (EVector es) = reverse es
 seqElems (ESet s) = S.elems s
--- NOTE: the sequence from a map is actually a flat list with every odd element key and
--- even element value
-seqElems (EMap m) = M.elems m
+seqElems (EMap m) = map (\(k,v) -> makeSeq SeqVector [k, v]) $  M.assocs m
 seqElems (EString s) = map (\c -> EString [c]) s
 seqElems x = []
 
-pairs :: [a] -> [(a, a)]
-pairs [] = []
-pairs (a : b : r) = (a,b) : pairs r
-pairs [a] = [(a,a)]
-
+-- make a seqable object from a natural sequence of elements for that type
 makeSeq :: SeqType -> [Expr] -> Expr
 makeSeq SeqList = EList
 makeSeq SeqSet = ESet . S.fromList
 makeSeq SeqVector = EVector . reverse
--- NOTE: the sequence to a map is actually a flat list with every odd element key and even value
-makeSeq SeqMap = EMap . M.fromList . pairs
+-- NOTE: the sequence provided to a map consists of binary sequences, holding key and value
+makeSeq SeqMap = EMap . M.fromList . map (\elem -> let (k:v:[]) = seqElems elem in (k,v))
+
+-- create pairs of consecutive elements, in the form of EVectors
+pairs :: [Expr] -> [Expr]
+pairs [] = []
+pairs (a:b:r) = makeSeq SeqVector [a, b] : pairs r
+pairs [a] = [makeSeq SeqVector [a, ENil]] -- TODO: ad hoc for a strange case...
+
+-- make a seqable object from a flat list of elements
+makeSeqFlat :: SeqType -> [Expr] -> Expr
+makeSeqFlat SeqMap = makeSeq SeqMap . pairs
+makeSeqFlat seqType = makeSeq seqType
 
 conj :: Expr -> Expr -> Expr
 conj (EList s) e = EList (e:s)
@@ -109,7 +123,7 @@ instance Show Expr where
   show (Macro lambda) = show lambda
   show (ESpecial s _) = s
   show (EMap m) = "{" ++ Str.join ", " (map (\(k,v) -> show k ++ " " ++ show v) $ M.assocs m) ++ "}"
-  show e | isSeq e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
+  show e | isSeqable e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
     elems = seqElems e
 instance Eq Expr where
   EKeyword ns1 s1 == EKeyword ns2 s2 = ns1 == ns2 && s1 == s2
@@ -120,7 +134,7 @@ instance Eq Expr where
   ENil == ENil = True
   Fun (Lambda n1 p1 e1 _) == Fun (Lambda n2 p2 e2 _) = n1 == n2 && e1 == e2 && p1 == p2
   ESpecial s1 _ == ESpecial s2 _ = s1 == s2
-  seq1 == seq2 | isSeq seq1 && isSeq seq2 =
+  seq1 == seq2 | isSeqable seq1 && isSeqable seq2 =
     seqType seq1 == seqType seq2 && seqElems seq1 == seqElems seq2
   _ == _ = False
 lexico comps = if length diffs == 0 then EQ else head diffs where diffs = filter (/= EQ) comps
@@ -129,7 +143,7 @@ instance Ord Expr where
   ESymbol s1 `compare` ESymbol s2 = s1 `compare` s2
   ENumber s1 `compare` ENumber s2 = s1 `compare` s2
   EString s1 `compare` EString s2 = s1 `compare` s2
-  seq1 `compare` seq2 | isSeq seq1 && isSeq seq2 =
+  seq1 `compare` seq2 | isSeqable seq1 && isSeqable seq2 =
     (seqType seq1, seqElems seq1) `compare` (seqType seq2, seqElems seq2)
   e1 `compare` e2 = show e1 `compare` show e2
 type ParseResult = Either Err [Expr]
@@ -142,7 +156,12 @@ exprType (ESymbol {}) = "symbol"
 exprType (EString {}) = "string"
 exprType (ENil {}) = "nil"
 exprType (ESpecial {}) = "special"
-exprType e | isSeq e = "seq"
+exprType (EMap {}) = "map"
+exprType (EList {}) = "list"
+exprType (EVector {}) = "vector"
+exprType (ESet {}) = "set"
+exprType e | isSeqable e = "seq"
+exprType e = "none"
 
 --
 -- Environment
@@ -155,7 +174,7 @@ type Value = Expr
 
 -- The computation monad has to handle
 type Bindings = Map.Map String Value
-data Env = Env { globalEnv :: Bindings, localEnv :: Bindings, traceFlag :: Bool }
+data Env = Env { globalEnv :: Bindings, localEnv :: Bindings, traceFlag :: Bool } deriving (Show)
 
 setTrace :: Bool -> ComputationM Bool
 setTrace flag = do
@@ -195,7 +214,7 @@ printBindings bindings = do
 -- if succeding
 unify :: Expr -> Expr -> Bindings -> (Maybe Bindings)
 unify (ESymbol name) value b = return $ Map.insert name value b
-unify s1 s2 b | isSeq s1 && isSeq s2 = unifyList (seqElems s1) (seqElems s2) b
+unify s1 s2 b | isSeqable s1 && isSeqable s2 = unifyList (seqElems s1) (seqElems s2) b
 unify s1 s2 b | s1 == s2 = Just b
               | True = Nothing
 
@@ -325,7 +344,7 @@ createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
    Fun (Lambda "seq?" (EList [ESymbol "x"]) ENil $ (\(s : _) -> return . EBool $ isSeq s)),
    -- NOTE: seq on a map creates a FLAT list of keys and values interleaved!
    Fun (Lambda "seq" (EList [ESymbol "seq"]) ENil $ (\(s : _) ->
-     let elems = (if isSeq s then seqElems s else []) in return $
+     let elems = seqElems s in return $
      if null elems then ENil else EList elems)),
    -- conj can add many elements, where maps expects sequences of key and value
    -- for each added element
@@ -409,7 +428,7 @@ parseSymbol = ESymbol <$> lex (ident <|> oper)
               <?> "symbol"
 parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
              <?> "atom"
-parseSeq seqType = makeSeq seqType <$> 
+parseSeq seqType = makeSeqFlat seqType <$> 
                    (sym (leftDelim seqType) *> many parseExpr <* sym (rightDelim seqType))
                    <?> "list"
 parseList = parseSeq SeqList
@@ -450,7 +469,7 @@ evalExpr e@(Fun f) = return e
 evalExpr e@(ESpecial n s) = return e
 evalExpr e@(Macro f) = return e
 evalExpr e@ENil = return e
-evalExpr e | isSeq e = do
+evalExpr e | isSeqable e = do
   vals <- mapM evalExpr $ seqElems e
   return $ makeSeq (seqType e) vals
 evalExpr expr = throwError $ "Could not evaluate " ++ show expr
@@ -534,3 +553,33 @@ tryReadFile :: String -> IO String
 tryReadFile = readFile
 -- tryReadFile n = catch (readFile n)
 --                     (\e -> fail "Could not open file " ++ n ++ " due to: " ++ show (e :: IOException))
+
+
+-- Utilities to simplify parsing and evaluating individual expressions
+
+preludeEnv :: IO Env
+preludeEnv = do
+  (_, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))") createEmptyEnv
+  return st
+
+testParse :: String -> Expr
+testParse = either (EString .show) id . parse parseExpr ""
+
+testExpand1 :: Expr -> IO Expr
+testExpand1 e = do
+  env <- preludeEnv
+  (val, _) <- runStateT (runErrorT $ expandMacro1 e) env
+  return $ either EString id val
+
+testExpand :: Expr -> IO Expr
+testExpand e = do
+  env <- preludeEnv
+  (val, _) <- runStateT (runErrorT $ expandMacro e) env
+  return $ either EString id val
+
+testEval :: Expr -> IO Expr
+testEval e = do
+   env <- preludeEnv
+   (val, _) <- runStateT (runErrorT $ evalExpr e) env
+   return $ either EString id val
+
