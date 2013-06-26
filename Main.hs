@@ -98,7 +98,21 @@ type Value = Expr
 
 -- The computation monad has to handle
 type Bindings = Map.Map String Value
-data Env = Env { globalEnv :: Bindings, localEnv :: Bindings }
+data Env = Env { globalEnv :: Bindings, localEnv :: Bindings, traceFlag :: Bool }
+
+setTrace :: Bool -> ComputationM Bool
+setTrace flag = do
+  env <- get
+  let oldFlag = traceFlag env
+  let env' = env { traceFlag = flag }
+  put env'
+  return oldFlag
+getTrace :: ComputationM Bool
+getTrace = get >>= return . traceFlag
+printTrace :: String -> ComputationM ()
+printTrace text = do
+  flag <- getTrace
+  if flag then liftIO $ putStrLn $ "TRACE: " ++ text else return ()
 
 trace :: Expr -> IO ()
 trace = print
@@ -108,11 +122,12 @@ printShow (EString s) = s
 printShow x = show x
 
 printEnv :: Env -> IO ()
-printEnv (Env global local) = do
+printEnv e = do
+  putStrLn $ "trace = " ++ show (traceFlag e)
   putStrLn "global"
-  printBindings global
+  printBindings $ globalEnv e
   putStrLn "local"
-  printBindings local
+  printBindings $ localEnv e
 
 printBindings :: Bindings -> IO ()
 printBindings bindings = do
@@ -134,10 +149,11 @@ printComp = do
   return ENil
 
 getVar :: Env -> String -> Maybe Value
-getVar (Env global local) var = listToMaybe $ catMaybes [(Map.lookup var local), (Map.lookup var global)]
+getVar e var = listToMaybe $ catMaybes [(Map.lookup var $ localEnv e),
+                                        (Map.lookup var $ globalEnv e)]
 
 bindVar :: Env -> String -> Value -> Env
-bindVar env@(Env global local) k v = env { globalEnv = Map.insert k v global }
+bindVar e k v = e { globalEnv = Map.insert k v $ globalEnv e }
 
 resetLocal :: Env -> Env
 resetLocal env = env { localEnv = createEmptyBindings }
@@ -155,13 +171,14 @@ createBindings keys values = foldl (\e (k,v) -> Map.insert k v e) Map.empty $ zi
 
 -- Create an environment only having mappings for special forms and primitive functions
 createEmptyEnv :: Env
-createEmptyEnv = Env (createBindings [
+createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
   -- specials
-  "def", "do", "if", "trace", "quote", "lambda", "macro",
+  "def", "do", "if", "dump", "quote", "lambda", "macro",
   -- primitives
-  "print", "eval", "eval*", "slurp", "read*", "macroexpand-1",
+  "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
   "cons", "first", "rest",
-  "+", "-", "*", "div", "mod", "<", "=", "list", "nil", "false", "true"]
+  "+", "-", "*", "div", "mod", "<", "=", "list", "nil", "false", "true",
+  "trace"]
   [ESpecial "def" (\((ESymbol var):value:[]) -> do
      evalValue <- evalExpr value
      e <- get
@@ -171,17 +188,11 @@ createEmptyEnv = Env (createBindings [
    ESpecial "if" (\(condPart : thenPart : elsePart : []) -> do
      cond <- evalExpr condPart
      evalExpr (if (isTruthy cond) then thenPart else elsePart)),
-   ESpecial "trace" (\(param : []) -> do 
-      liftIO $ putStrLn "TRACE: "
+   ESpecial "dump" (\_ -> do 
+      liftIO $ putStrLn "DUMP: "
       liftIO $ putStrLn "ENV = "
       printComp
-      liftIO $ putStr "\nEXP = "
-      liftIO $ trace param
-      liftIO $ putStr "\nVAL = "
-      evalParam <- evalExpr param
-      liftIO $ trace evalParam
-      liftIO $ putStrLn ""
-      return evalParam),
+      return ENil),
    ESpecial "quote" (\(param : _) -> do
       return $ param),
    ESpecial "lambda" (\((ESeq _ params) : body) -> do
@@ -223,9 +234,10 @@ createEmptyEnv = Env (createBindings [
    Fun (Lambda "read*" [] ENil $ (\((EString s) : _) -> do
      readProgram s >>= return . ESeq SeqList
    )),
-   Fun (Lambda "macroexpand-1" [] ENil $ (\((ESeq _ (m : params) : _)) -> do
-     macro <- evalExpr m
-     apply macro params)),
+   Fun (Lambda "macroexpand-1" [] ENil $ (\(e : _) ->
+     expandMacro1 e)),
+   Fun (Lambda "macroexpand" [] ENil $ (\(e : _) ->
+     expandMacro e)),
    Fun (Lambda "cons" [] ENil $ (\(f : (ESeq _ r) : _) -> return $ ESeq SeqList (f : r))),
    Fun (Lambda "first" [] ENil $ (\((ESeq _ (f: _)) : _) -> return f)),
    Fun (Lambda "rest" [] ENil $ (\((ESeq seqType (_: r)) : _) -> return $ ESeq seqType r)),
@@ -239,8 +251,10 @@ createEmptyEnv = Env (createBindings [
    Fun (Lambda "list" [] ENil $ (\params -> return $ ESeq SeqList params)),
    ENil,
    EBool False,
-   EBool True])
-   createEmptyBindings
+   EBool True,
+   Fun (Lambda "trace" [] ENil $ (\(flag : _) ->
+     (setTrace $ isTruthy flag) >>= return . EBool))],
+   localEnv = createEmptyBindings }
 
 -- utility to compose an unary function with a binary one
 (.*) = (.) . (.)
@@ -249,7 +263,7 @@ createEmptyState :: Computation
 createEmptyState = put createEmptyEnv >> return ENil
 
 combineEnv :: Env -> Bindings -> Env
-combineEnv env@(Env global local) bindings = env { localEnv = Map.union bindings local }
+combineEnv e bindings = e { localEnv = Map.union bindings $ localEnv e }
 
 flipNs (EKeyword ns (Just s)) = EKeyword s (Just ns)
 flipNs x = x
@@ -310,7 +324,7 @@ parseExprText :: String -> ParseResult
 parseExprText input = either (Left . show) (Right . (\x -> [x])) $ parse parseExpr "clojure" input
 
 expandProgram :: [Expr] -> ComputationM [Expr]
-expandProgram exprs = return exprs
+expandProgram exprs = mapM expandMacro exprs
 
 readProgram :: String -> ComputationM [Expr]
 readProgram text = either throwError  expandProgram $ parseProgramText text
@@ -375,8 +389,25 @@ apply (Macro (Lambda _ _ _ f)) params = f params >>= evalExpr
 apply (ESpecial _ f) params = f params
 apply other _ = throwError $ "Cannot apply as a function: " ++ show other
 
-expandMacro (Macro (Lambda _ _ _ f)) params = f params
-expandMacro f params = return $ ESeq SeqList params
+isMacro :: Expr -> Bool
+isMacro (Macro _) = True
+isMacro _ = False
+
+expandMacro1 :: Expr -> Computation
+expandMacro1 e@(ESeq SeqList ((Macro (Lambda n _ _ f)) : params)) =
+  f params
+expandMacro1 e@(ESeq SeqList (f : params)) = do
+  env <- get
+  (fval, newSt) <- lift $ lift $ runStateT (runErrorT $ evalExpr f) env
+  put newSt
+  either (\err -> return e) (\val -> if val == f || not (isMacro val) then return e else expandMacro1 (ESeq SeqList (val : params))) fval
+expandMacro1 e = return e
+
+expandMacro :: Expr -> Computation
+expandMacro e = do
+  exp <- expandMacro1 e
+  printTrace $ "Expanded one step, from " ++ show e ++ " to " ++ show exp
+  if exp == e then return exp else expandMacro exp
 
 main :: IO ()
 main = repl createEmptyEnv
@@ -399,7 +430,7 @@ replEval :: Env -> String -> IO ()
 replEval env parsed = do
   (vals, st) <- runStateT (runErrorT $ evalStr parsed) env
   either (\x -> putStr "ERROR: " >> putStrLn x) (mapM_ print) vals
-  repl $ either (\_ -> st) (\vs -> if length vs > 0 then bindVar st "$" (last vs) else st) vals
+  replCont (either (\_ -> st) (\vs -> if length vs > 0 then bindVar st "$" (last vs) else st) vals) ""
 
 
 -- Some utilities
