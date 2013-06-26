@@ -71,7 +71,7 @@ seqElems (ESet s) = S.elems s
 -- even element value
 seqElems (EMap m) = M.elems m
 seqElems (EString s) = map (\c -> EString [c]) s
-seqElems x = [x]
+seqElems x = []
 
 pairs :: [a] -> [(a, a)]
 pairs [] = []
@@ -322,8 +322,9 @@ createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
    Fun (Lambda "type" (EList [ESymbol "x"]) ENil $ (\(f : _) -> return . EString . exprType $ f)),
    Fun (Lambda "seq?" (EList [ESymbol "x"]) ENil $ (\(s : _) -> return . EBool $ isSeq s)),
    -- NOTE: seq on a map creates a FLAT list of keys and values interleaved!
-   Fun (Lambda "seq" (EList [ESymbol "seq"]) ENil $ (\(s : _) -> return $
-     if isSeq s then EList . seqElems $ s else ENil)),
+   Fun (Lambda "seq" (EList [ESymbol "seq"]) ENil $ (\(s : _) ->
+     let elems = (if isSeq s then seqElems s else []) in return $
+     if null elems then ENil else EList elems)),
    -- conj can add many elements, where maps expects sequences of key and value
    -- for each added element
    Fun (Lambda "conj" (EList [ESymbol "seq", ESymbol "elem"]) ENil $ (\(s : adding) -> return $ foldl conj s adding)),

@@ -18,7 +18,7 @@
 
 (defn into [dest from] (apply conj dest (seq from)))
 (def empty? (comp not seq))
-(defn map [f coll] ())
+(defn map [f coll] (if (empty? coll) nil (cons (f (first coll)) (map f (rest coll)))))
 
 ;; integrating with runtime/environment: load
 
