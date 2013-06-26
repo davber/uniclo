@@ -282,7 +282,7 @@ language = P.LanguageDef {
     commentLine = ";",
     nestedComments = False,
     identStart = oneOf "!#$%&|*+-/<=>?_" <|> letter,
-    identLetter = oneOf "!#$%&|*+-<=>?_'" <|> alphaNum,
+    identLetter = oneOf "!#$%&|*+-<=>?_.'" <|> alphaNum,
     opStart = oneOf "~#.",
     opLetter = oneOf "@.",
     reservedNames = [],
