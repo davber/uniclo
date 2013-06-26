@@ -65,7 +65,8 @@ seqType (EMap _) = SeqMap
 
 seqElems :: Expr -> [Expr]
 seqElems (EList es) = es
-seqElems (EVector es) = es
+-- NOTE: the elements are stored in reverse inside the construct
+seqElems (EVector es) = reverse es
 seqElems (ESet s) = S.elems s
 -- NOTE: the sequence from a map is actually a flat list with every odd element key and
 -- even element value
@@ -81,13 +82,14 @@ pairs [a] = [(a,a)]
 makeSeq :: SeqType -> [Expr] -> Expr
 makeSeq SeqList = EList
 makeSeq SeqSet = ESet . S.fromList
-makeSeq SeqVector = EVector
+makeSeq SeqVector = EVector . reverse
 -- NOTE: the sequence to a map is actually a flat list with every odd element key and even value
 makeSeq SeqMap = EMap . M.fromList . pairs
 
 conj :: Expr -> Expr -> Expr
 conj (EList s) e = EList (e:s)
-conj (EVector s) e = EVector $ s ++ [e] -- NOTE: quite inefficient!
+-- NOTE: the vector is stored in reverse inside the construct
+conj (EVector s) e = EVector (e : s)
 -- NOTE: conj:ing to a map requires a seqable element with at least two
 -- elements, being the new key and value to be added
 conj (EMap m) e = let (k:v:_) = seqElems e in EMap $ M.insert k v m
