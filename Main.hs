@@ -260,15 +260,18 @@ createBindings :: [String] -> [Value] -> Bindings
 createBindings keys values = foldl (\e (k,v) -> Map.insert k v e) Map.empty $ zip keys values
 
 -- Create an environment only having mappings for special forms and primitive functions
+primFuns = [
+  "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
+  "cons", "first", "type", "seq?", "seq", "conj",
+  "+", "-", "*", "div", "mod", "<", "=", "list"]
+
 createEmptyEnv :: Env
-createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
+createEmptyEnv = let (primKeys, primValues) = unzip . map (\n -> (n, makePrimLambda n)) $ primFuns in Env { traceFlag = False, globalEnv = createBindings (primKeys ++ [
   -- specials
   "def", "do", "if", "dump", "quote", "unify", "lambda", "macro",
   -- primitives
-  "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
-  "cons", "first", "rest", "type", "seq?", "seq", "conj",
-  "+", "-", "*", "div", "mod", "<", "=", "list", "nil", "false", "true",
-  "trace"]
+  "trace", "nil", "false", "true"])
+  (primValues ++
   [ESpecial "def" (\((ESymbol var):value:[]) -> do
      evalValue <- evalExpr value
      e <- get
@@ -312,56 +315,11 @@ createEmptyEnv = Env { traceFlag = False, globalEnv = createBindings [
         expanded <- evalExpr doBody
         setLocalEnv . localEnv $ e
         return expanded)),
-   Fun (Lambda "apply" (EList [ESymbol "f", ESymbol "args..."]) ENil (\(f : params) ->
-      let vals = init params ++ (seqElems $ last params) in
-      apply f vals)),
-   Fun (Lambda "print" (EList [ESymbol "args..."]) ENil (\params -> do
-      liftIO . putStr . Str.join "" $ map printShow params
-      return ENil)),
-   Fun (Lambda "eval" (EList [ESymbol "form"]) ENil $ (\(param : _) ->
-     evalExpr param
-   )),
-   Fun (Lambda "eval*" (EList [ESymbol "forms"]) ENil $ (\(s : _) -> do
-     let exprs = seqElems s
-     values <- mapM evalExpr exprs
-     return $ if length values == 0 then ENil else last values
-   )),
-   Fun (Lambda "slurp" (EList [ESymbol "path"]) ENil $ (\((EString n) : _) -> do
-     cont <- liftIO $ tryReadFile n
-     return $ EString cont
-   )),
-   Fun (Lambda "read*" (EList [ESymbol "text"]) ENil $ (\((EString s) : _) -> do
-     readProgram s >>= return . EList
-   )),
-   Fun (Lambda "macroexpand-1" (EList [ESymbol "form"]) ENil $ (\(e : _) ->
-     expandMacro1 e)),
-   Fun (Lambda "macroexpand" (EList [ESymbol "form"]) ENil $ (\(e : _) ->
-     expandMacro e)),
-   Fun (Lambda "cons" (EList [ESymbol "elem", ESymbol "seq"]) ENil $ (\(f : s : _) -> return $ EList (f : seqElems s))),
-   Fun (Lambda "first" (EList [ESymbol "seq"]) ENil $ (\(s : _) -> return . head . seqElems $ s)),
-   Fun (Lambda "rest" (EList [ESymbol "seq"]) ENil $ (\(s : _) -> return . EList . tail . seqElems $ s)),
-   Fun (Lambda "type" (EList [ESymbol "x"]) ENil $ (\(f : _) -> return . EString . exprType $ f)),
-   Fun (Lambda "seq?" (EList [ESymbol "x"]) ENil $ (\(s : _) -> return . EBool $ isSeq s)),
-   -- NOTE: seq on a map creates a FLAT list of keys and values interleaved!
-   Fun (Lambda "seq" (EList [ESymbol "seq"]) ENil $ (\(s : _) ->
-     let elems = seqElems s in return $
-     if null elems then ENil else EList elems)),
-   -- conj can add many elements, where maps expects sequences of key and value
-   -- for each added element
-   Fun (Lambda "conj" (EList [ESymbol "seq", ESymbol "elem"]) ENil $ (\(s : adding) -> return $ foldl conj s adding)),
-   Fun (Lambda "+" (EList [ESymbol "nums..."]) ENil $ numHandler (foldl (+) 0)),
-   Fun (Lambda "-" (EList [ESymbol "nums..."]) ENil $ numHandler (\(n : ns) -> if ns==[] then - n else (foldl (-) n ns))),
-   Fun (Lambda "*" (EList [ESymbol "nums..."]) ENil $ numHandler (foldl (*) 1)),
-   Fun (Lambda "div" (EList [ESymbol "nums..."]) ENil $ numHandler (foldl1 div)),
-   Fun (Lambda "mod" (EList [ESymbol "num1", ESymbol "num2"]) ENil $ numHandler (foldl1 mod)),
-   Fun (Lambda "<" (EList [ESymbol "x1", ESymbol "x2"]) ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 < p2))),
-   Fun (Lambda "=" (EList [ESymbol "x1", ESymbol "x2"]) ENil $ (\(p1 : p2 : []) -> return $ EBool (p1 == p2))),
-   Fun (Lambda "list" (EList [ESymbol "elems..."]) ENil $ (\params -> return $ EList params)),
    ENil,
    EBool False,
    EBool True,
    Fun (Lambda "trace" (EList [ESymbol "flag"]) ENil $ (\(flag : _) ->
-     (setTrace $ isTruthy flag) >>= return . EBool))],
+     (setTrace $ isTruthy flag) >>= return . EBool))]),
    localEnv = createEmptyBindings }
 
 -- utility to compose an unary function with a binary one
@@ -509,21 +467,22 @@ isMacro :: Expr -> Bool
 isMacro (Macro _) = True
 isMacro _ = False
 
-expandMacro1 :: Expr -> Computation
+expandMacro1 :: Expr -> ComputationM (Maybe Expr)
 expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) =
-  f params
+  f params >>= lift . lift . return . Just
 expandMacro1 e@(EList (f : params)) = do
   env <- get
   (fval, newSt) <- lift $ lift $ runStateT (runErrorT $ evalExpr f) env
   put newSt
-  either (\err -> return e) (\val -> if val == f || not (isMacro val) then return e else expandMacro1 (EList (val : params))) fval
-expandMacro1 e = return e
+  either (\err -> printTrace ("warning when trying to expand form " ++ show e ++ ": " ++ show err) >> return Nothing) (\val -> if isMacro val then expandMacro1 (EList (val : params)) else return Nothing) fval
+expandMacro1 e = return Nothing
 
+-- apply repeatedly till macroexpand-1 no longer yields a value
 expandMacro :: Expr -> Computation
 expandMacro e = do
   exp <- expandMacro1 e
   printTrace $ "Expansion: " ++ show e ++ " ==> " ++ show exp
-  if exp == e then return exp else expandMacro exp
+  maybe (return e) expandMacro exp
 
 main :: IO ()
 main = repl createEmptyEnv
@@ -571,8 +530,7 @@ testExpand1 :: Expr -> IO Expr
 testExpand1 e = do
   env <- preludeEnv
   (val, _) <- runStateT (runErrorT $ expandMacro1 e) env
-  return $ either EString id val
-
+  return $ either (EString . show) (maybe ENil id) val
 testExpand :: Expr -> IO Expr
 testExpand e = do
   env <- preludeEnv
@@ -584,4 +542,47 @@ testEval e = do
    env <- preludeEnv
    (val, _) <- runStateT (runErrorT $ evalExpr e) env
    return $ either EString id val
+
+
+
+
+--
+-- primitive functions
+-- 
+
+makePrimLambda :: String -> Expr
+makePrimLambda name = Fun $ Lambda name ENil ENil $ prim name
+
+prim :: String -> [Expr] -> Computation
+prim "rest" (param : _) = return . EList . tail . seqElems $ param
+prim "apply" (f : params) = let vals = init params ++ (seqElems $ last params) in
+   apply f vals
+prim "print" params = (liftIO . putStr . Str.join "" $ map printShow params) >> return ENil
+prim "eval" (param : _) = evalExpr param
+prim "eval*" (s : _) = do
+     let exprs = seqElems s
+     values <- mapM evalExpr exprs
+     return $ if length values == 0 then ENil else last values
+prim "slurp" ((EString n) : _) = liftIO $ tryReadFile n >>= return . EString
+prim "read*" ((EString s) : _) = readProgram s >>= return . EList
+prim "macroexpand-1" (e : _) = expandMacro1 e >>= maybe (return e) return
+prim "macroexpand" (e : _) = expandMacro e
+prim "cons" (f : s : _) = return $ EList (f : seqElems s)
+prim "first" (s : _) = return . head . seqElems $ s
+prim "type" (f : _) = return . EString . exprType $ f
+prim "seq?" (s : _) = return . EBool $ isSeq s
+-- NOTE: seq on a map creates a FLAT list of keys and values interleaved!
+prim "seq" (s : _) = let elems = seqElems s in
+     return $ if null elems then ENil else EList elems
+-- conj can add many elements, where maps expects sequences of key and value
+-- for each added element
+prim "conj" (s : adding) = return $ foldl conj s adding
+prim "+" s = numHandler (foldl (+) 0) s
+prim "-" s = numHandler (\(n : ns) -> if ns==[] then - n else (foldl (-) n ns)) s
+prim "*" s = numHandler (foldl (*) 1) s
+prim "div" s = numHandler (foldl1 div) s
+prim "mod" s = numHandler (foldl1 mod) s
+prim "<" (p1 : p2 : []) = return $ EBool (p1 < p2)
+prim "=" (p1 : p2 : []) = return $ EBool (p1 == p2)
+prim "list" params =return $ EList params
 
