@@ -292,6 +292,8 @@ unifyState :: Expr -> Expr -> ComputationM Bool
 unifyState e1 e2 = do
   e <- get
   let (e', flag) = maybe (e, False) (\env -> (env, True)) $ unifyEnv e e1 e2
+  printTrace $ "Unified " ++ show e1 ++ " and " ++ show e2 ++ " getting local env " ++
+    show (localEnv e')
   put e'
   return flag
 
