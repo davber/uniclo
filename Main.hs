@@ -265,13 +265,11 @@ createEmptyEnv :: Env
 createEmptyEnv = let (primKeys, primValues) = unzip . map (\n -> (n, makePrimLambda n)) $ primFuns
                      (specialKeys, specialValues) = unzip. map (\n -> (n, makePrimSpecial n)) $ primSpecials in Env { traceFlag = False, globalEnv = createBindings (primKeys ++ specialKeys ++ [
   -- primitives
-  "nil", "false", "true", "trace"])
+  "nil", "false", "true"])
   (primValues ++ specialValues ++ [
    ENil,
    EBool False,
-   EBool True,
-   Fun (Lambda "trace" (EList [ESymbol "flag"]) ENil $ (\(flag : _) ->
-     (setTrace $ isTruthy flag) >>= return . EBool))]),
+   EBool True]),
    localEnv = createEmptyBindings }
 
 -- utility to compose an unary function with a binary one
@@ -419,6 +417,7 @@ isMacro :: Expr -> Bool
 isMacro (Macro _) = True
 isMacro _ = False
 
+-- expand top-level form one step, if possible
 expandMacro1 :: Expr -> ComputationM (Maybe Expr)
 expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) =
   f params >>= lift . lift . return . Just
@@ -429,12 +428,24 @@ expandMacro1 e@(EList (f : params)) = do
   either (\err -> printTrace ("warning when trying to expand form " ++ show e ++ ": " ++ show err) >> return Nothing) (\val -> if isMacro val then expandMacro1 (EList (val : params)) else return Nothing) fval
 expandMacro1 e = return Nothing
 
--- apply repeatedly till macroexpand-1 no longer yields a value
+
+-- apply macroexpand-1 repeatedly at top level till it yields no new value
+expandMacroTop :: Expr -> Computation
+expandMacroTop e = do
+  exp <- expandMacro1 e
+  if exp == Nothing then return () else printTrace $ "Expansion: " ++ show e ++ " ==> " ++ show exp
+  maybe (return e) expandMacro exp
+
+-- apply macroexpand both on top and then recursively inside the form
 expandMacro :: Expr -> Computation
 expandMacro e = do
-  exp <- expandMacro1 e
-  printTrace $ "Expansion: " ++ show e ++ " ==> " ++ show exp
-  maybe (return e) expandMacro exp
+  topExp <- expandMacroTop e
+  let children = seqElems topExp
+  if exprType topExp /= "string" && isSeqable topExp && (not . null) children then do
+    expChildren <- mapM expandMacro children
+    return $ makeSeq (seqType topExp) expChildren
+  else
+    return topExp
 
 main :: IO ()
 main = repl createEmptyEnv
@@ -467,37 +478,6 @@ tryReadFile = readFile
 -- tryReadFile n = catch (readFile n)
 --                     (\e -> fail "Could not open file " ++ n ++ " due to: " ++ show (e :: IOException))
 
-
--- Utilities to simplify parsing and evaluating individual expressions
-
-preludeEnv :: IO Env
-preludeEnv = do
-  (_, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))") createEmptyEnv
-  return st
-
-testParse :: String -> Expr
-testParse = either (EString .show) id . parse parseExpr ""
-
-testExpand1 :: Expr -> IO Expr
-testExpand1 e = do
-  env <- preludeEnv
-  (val, _) <- runStateT (runErrorT $ expandMacro1 e) env
-  return $ either (EString . show) (maybe ENil id) val
-testExpand :: Expr -> IO Expr
-testExpand e = do
-  env <- preludeEnv
-  (val, _) <- runStateT (runErrorT $ expandMacro e) env
-  return $ either EString id val
-
-testEval :: Expr -> IO Expr
-testEval e = do
-   env <- preludeEnv
-   (val, _) <- runStateT (runErrorT $ evalExpr e) env
-   return $ either EString id val
-
-
-
-
 --
 -- primitive functions
 -- 
@@ -505,7 +485,8 @@ testEval e = do
 primFuns = [
   "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
   "cons", "first", "type", "seq?", "seq", "conj",
-  "+", "-", "*", "div", "mod", "<", "=", "list"]
+  "+", "-", "*", "div", "mod", "<", "=", "list",
+  "trace"]
 primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro"]
 
 makePrimLambda :: String -> Expr
@@ -549,7 +530,8 @@ prim "div" s = numHandler (foldl1 div) s
 prim "mod" s = numHandler (foldl1 mod) s
 prim "<" (p1 : p2 : []) = return $ EBool (p1 < p2)
 prim "=" (p1 : p2 : []) = return $ EBool (p1 == p2)
-prim "list" params =return $ EList params
+prim "list" params = return $ EList params
+prim "trace" (flag : _) = setTrace (isTruthy flag) >>= return . EBool
 
 --
 -- special forms, with parameters unevaluated
@@ -596,3 +578,34 @@ prim "macro" (s : body) = do
         expanded <- evalExpr doBody
         setLocalEnv . localEnv $ e
         return expanded)
+
+
+
+-- Utilities to simplify parsing and evaluating individual expressions
+
+preludeEnv :: IO Env
+preludeEnv = do
+--  (_, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))") createEmptyEnv
+--  return st
+  return createEmptyEnv
+
+testParse :: String -> Expr
+testParse = either (EString .show) id . parse parseExpr ""
+
+testExpand1 :: Expr -> IO Expr
+testExpand1 e = do
+  env <- preludeEnv
+  (val, _) <- runStateT (runErrorT $ expandMacro1 e) env
+  return $ either (EString . show) (maybe ENil id) val
+
+testExpand :: Expr -> IO Expr
+testExpand e = do
+  env <- preludeEnv
+  (val, _) <- runStateT (runErrorT $ expandMacro e) env
+  return $ either EString id val
+
+testEval :: Expr -> IO Expr
+testEval e = do
+   env <- preludeEnv
+   (val, _) <- runStateT (runErrorT $ evalExpr e) env
+   return $ either EString id val
