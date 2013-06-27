@@ -260,61 +260,13 @@ createBindings :: [String] -> [Value] -> Bindings
 createBindings keys values = foldl (\e (k,v) -> Map.insert k v e) Map.empty $ zip keys values
 
 -- Create an environment only having mappings for special forms and primitive functions
-primFuns = [
-  "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
-  "cons", "first", "type", "seq?", "seq", "conj",
-  "+", "-", "*", "div", "mod", "<", "=", "list"]
 
 createEmptyEnv :: Env
-createEmptyEnv = let (primKeys, primValues) = unzip . map (\n -> (n, makePrimLambda n)) $ primFuns in Env { traceFlag = False, globalEnv = createBindings (primKeys ++ [
-  -- specials
-  "def", "do", "if", "dump", "quote", "unify", "lambda", "macro",
+createEmptyEnv = let (primKeys, primValues) = unzip . map (\n -> (n, makePrimLambda n)) $ primFuns
+                     (specialKeys, specialValues) = unzip. map (\n -> (n, makePrimSpecial n)) $ primSpecials in Env { traceFlag = False, globalEnv = createBindings (primKeys ++ specialKeys ++ [
   -- primitives
-  "trace", "nil", "false", "true"])
-  (primValues ++
-  [ESpecial "def" (\((ESymbol var):value:[]) -> do
-     evalValue <- evalExpr value
-     e <- get
-     put $ bindVar e var evalValue
-     return evalValue),
-   ESpecial "do" (\params -> liftM last (mapM evalExpr params)),
-   ESpecial "if" (\(condPart : thenPart : elsePart : []) -> do
-     cond <- evalExpr condPart
-     evalExpr (if (isTruthy cond) then thenPart else elsePart)),
-   ESpecial "dump" (\_ -> do 
-      liftIO $ putStrLn "DUMP: "
-      liftIO $ putStrLn "ENV = "
-      printComp
-      return ENil),
-   ESpecial "quote" (\(param : _) -> do
-      return $ param),
-   ESpecial "unify" (\(formal : actual : body) -> do
-      let doBody = (EList (ESymbol "do" : body))
-      ok <- unifyState formal actual
-      if ok then evalExpr doBody else return ENil
-      ),
-   ESpecial "lambda" (\(s : body) -> do
-      let doBody = (EList (ESymbol "do" : body))
-      ce <- get
-      return $ Fun $ Lambda "lambda" s doBody (\actuals -> do
-        e <- get
-        setLocalEnv $ localEnv ce
-        alright <- unifyState s $ EList actuals
-        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
-        val <- evalExpr doBody
-        setLocalEnv $ localEnv e
-        return val)),
-   ESpecial "macro" (\(s : body) -> do
-      let doBody = (EList (ESymbol "do": body))
-      ce <- get
-      return $ Macro $ Lambda "macro" s doBody (\actuals -> do
-        e <- get
-        setLocalEnv $ localEnv ce
-        alright <- unifyState s $ EList actuals
-        if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
-        expanded <- evalExpr doBody
-        setLocalEnv . localEnv $ e
-        return expanded)),
+  "nil", "false", "true", "trace"])
+  (primValues ++ specialValues ++ [
    ENil,
    EBool False,
    EBool True,
@@ -550,10 +502,23 @@ testEval e = do
 -- primitive functions
 -- 
 
+primFuns = [
+  "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
+  "cons", "first", "type", "seq?", "seq", "conj",
+  "+", "-", "*", "div", "mod", "<", "=", "list"]
+primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro"]
+
 makePrimLambda :: String -> Expr
 makePrimLambda name = Fun $ Lambda name ENil ENil $ prim name
+makePrimSpecial :: String -> Expr
+makePrimSpecial name = ESpecial name $ prim name
 
+-- implementations of both functions and specials
 prim :: String -> [Expr] -> Computation
+
+--
+-- functions, having parameters passed evaluated
+--
 prim "rest" (param : _) = return . EList . tail . seqElems $ param
 prim "apply" (f : params) = let vals = init params ++ (seqElems $ last params) in
    apply f vals
@@ -586,3 +551,48 @@ prim "<" (p1 : p2 : []) = return $ EBool (p1 < p2)
 prim "=" (p1 : p2 : []) = return $ EBool (p1 == p2)
 prim "list" params =return $ EList params
 
+--
+-- special forms, with parameters unevaluated
+--
+prim "def" ((ESymbol var):value:[]) = do
+     evalValue <- evalExpr value
+     e <- get
+     put $ bindVar e var evalValue
+     return evalValue
+prim "do" params = liftM last . mapM evalExpr $ params
+prim "if" (condPart : thenPart : elsePart : []) = do
+     cond <- evalExpr condPart
+     evalExpr $ if isTruthy cond then thenPart else elsePart
+prim "dump" _ = do 
+      liftIO $ putStrLn "DUMP: "
+      liftIO $ putStrLn "ENV = "
+      printComp
+      return ENil
+prim "quote" (param : _) = do
+      return $ param
+prim "unify" (formal : actual : body) = do
+      let doBody = EList (ESymbol "do" : body)
+      ok <- unifyState formal actual
+      if ok then evalExpr doBody else return ENil
+prim "lambda" (s : body) = do
+      let doBody = (EList (ESymbol "do" : body))
+      ce <- get
+      return $ Fun $ Lambda "lambda" s doBody (\actuals -> do
+        e <- get
+        setLocalEnv $ localEnv ce
+        alright <- unifyState s $ EList actuals
+        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
+        val <- evalExpr doBody
+        setLocalEnv $ localEnv e
+        return val)
+prim "macro" (s : body) = do
+      let doBody = (EList (ESymbol "do": body))
+      ce <- get
+      return $ Macro $ Lambda "macro" s doBody (\actuals -> do
+        e <- get
+        setLocalEnv $ localEnv ce
+        alright <- unifyState s $ EList actuals
+        if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
+        expanded <- evalExpr doBody
+        setLocalEnv . localEnv $ e
+        return expanded)
