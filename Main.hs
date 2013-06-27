@@ -38,7 +38,8 @@ name _ = Nothing
 type Function = [Param] -> Computation
 data Lambda = Lambda String Expr Expr Function
 instance Show Lambda where
-  show (Lambda name params expr _) = name ++ "[\\" ++ show params ++ " --> " ++ show expr ++ "]"
+  show (Lambda name params expr _) = name ++
+    if isTruthy params then ": " ++ show params ++ " --> " ++ show expr ++ ")" else ""
 type Param = Expr
 data SeqType = SeqList | SeqVector | SeqMap | SeqSet deriving (Show, Read, Eq, Ord)
 leftDelim SeqList = "("
@@ -119,9 +120,9 @@ instance Show Expr where
   show (ENumber num) = show num
   show (EBool b) = if b then "true" else "false"
   show ENil = "nil"
-  show (Fun lambda) = show lambda
+  show (Fun lambda) = "[fun]" ++ show lambda
   show (Macro lambda) = show lambda
-  show (ESpecial s _) = s
+  show (ESpecial s _) = "[special]" ++ s
   show (EMap m) = "{" ++ Str.join ", " (map (\(k,v) -> show k ++ " " ++ show v) $ M.assocs m) ++ "}"
   show e | isSeqable e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
     elems = seqElems e
@@ -292,7 +293,7 @@ unifyState :: Expr -> Expr -> ComputationM Bool
 unifyState e1 e2 = do
   e <- get
   let (e', flag) = maybe (e, False) (\env -> (env, True)) $ unifyEnv e e1 e2
-  printTrace $ "Unified " ++ show e1 ++ " and " ++ show e2 ++ " getting local env " ++
+  printTrace $ "Unification: " ++ show e1 ++ " <|> " ++ show e2 ++ " ==> " ++
     show (localEnv e')
   put e'
   return flag
