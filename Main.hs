@@ -82,6 +82,11 @@ seqElems (EMap m) = map (\(k,v) -> makeSeq SeqVector [k, v]) $  M.assocs m
 seqElems (EString s) = map (\c -> EString [c]) s
 seqElems x = []
 
+isEmpty :: Expr -> Bool
+isEmpty s = case seqElems s of
+  (_:_) -> True
+  _ -> False
+
 -- make a seqable object from a natural sequence of elements for that type
 makeSeq :: SeqType -> [Expr] -> Expr
 makeSeq SeqList = EList
@@ -294,7 +299,7 @@ unifyState e1 e2 = do
   e <- get
   let (e', flag) = maybe (e, False) (\env -> (env, True)) $ unifyEnv e e1 e2
   printTrace $ "Unification: " ++ show e1 ++ " <|> " ++ show e2 ++ " ==> " ++
-    show (localEnv e')
+               if flag then show (localEnv e') else "failed!" 
   put e'
   return flag
 
@@ -313,7 +318,7 @@ language = P.LanguageDef {
     nestedComments = False,
     identStart = oneOf "!#$%&|*+-/<=>?_." <|> letter,
     identLetter = oneOf "!#$%&|*+-<=>?_.'" <|> alphaNum,
-    opStart = oneOf "~#",
+    opStart = oneOf "~#`'",
     opLetter = oneOf "@",
     reservedNames = [],
     reservedOpNames = [],
@@ -353,18 +358,21 @@ parseProgramText input = either (Left . show) Right $ parse parseProgram "clojur
 parseExprText :: String -> ParseResult
 parseExprText input = either (Left . show) (Right . (\x -> [x])) $ parse parseExpr "clojure" input
 
+-- applies macro expansion to a program
 expandProgram :: [Expr] -> ComputationM [Expr]
-expandProgram exprs = mapM expandMacro exprs
-
+expandProgram exprs = printTrace "*** Expanding program ***" >> mapM (\e -> expandMacro e >>= evalMacro) exprs
+-- reading a program both parses and read-expands it
 readProgram :: String -> ComputationM [Expr]
-readProgram text = either throwError  expandProgram $ parseProgramText text
+readProgram text = do
+  printTrace "*** Parsing program ***"
+  either throwError (\expr -> printTrace "*** Reading program ***" >> shufflePrefixList expr) $ parseProgramText text
 
 --
 -- Evaluator, yielding (and executing...) a computation
 --
 
 evalProgram :: [Expr] -> ComputationM [Value]
-evalProgram exprs = mapM evalExpr exprs
+evalProgram exprs = printTrace "*** Evaluating program ***" >> mapM evalExpr exprs
 
 evalExpr :: Expr -> Computation
 evalExpr e@(EKeyword _ _) = return e
@@ -390,7 +398,7 @@ evalExpr expr = throwError $ "Could not evaluate " ++ show expr
 -- evalStr evalues expression by expression, thus allowing for definitions
 -- of reader macros
 evalStr :: String -> ComputationM [Value]
-evalStr s = readProgram s >>= evalProgram
+evalStr s = readProgram s >>= expandProgram >>= evalProgram
 
 isSpecial :: Expr -> Bool
 isSpecial (ESpecial _ _) = True
@@ -414,20 +422,57 @@ apply :: Value -> [Value] -> Computation
 apply (Fun (Lambda _ _ _ f)) params = mapM evalExpr params >>= f
 apply (Macro (Lambda _ _ _ f)) params = f params >>= evalExpr
 apply (ESpecial _ f) params = f params
-apply other _ = throwError $ "Cannot apply as a function: " ++ show other
+apply other args = throwError $ "Not a proper function application: " ++ show (EList (other : args))
 
 isMacro :: Expr -> Bool
 isMacro (Macro _) = True
 isMacro _ = False
 
+--
+-- Reader prefix reshuffling, which makes prefix symbols regular prefix forms
+-- NOTE: we only care about definitions of the *prefix-symbols* forms for controlling
+-- these prefix symbols!
+--
+
+shufflePrefix :: Expr -> Computation
+shufflePrefix defE@(EList [ESymbol "def", ESymbol "*prefix-symbols*", expr]) = do
+  val <- evalExpr expr -- NOTE: usually a literal sequence
+  e <- get
+  let e' = bindVar e "*prefix-symbols*" val
+  put e'
+  printTrace $ "Set prefix symbols to " ++ show val
+  syms <- prefixSymbols
+  return defE
+shufflePrefix (EList [ESymbol "def", sym, expr]) = do
+  expr' <- shufflePrefix expr
+  return . EList $ [ESymbol "def", sym, expr']
+shufflePrefix e@(EList elems) = do
+  shufflePrefixList elems >>= return . EList
+-- TODO: should we not recurse into other conglomerates?
+shufflePrefix x = return x
+
+shufflePrefixList :: [Expr] -> ComputationM [Expr]
+-- whenever a prefix symbol is followed by enother one, we deal with it right-associatively
+shufflePrefixList e@(first : rest) = do
+  shuffleF <- shufflePrefix first
+  shuffleR <- shufflePrefixList rest
+  isPrefix <- isPrefixSymbol first
+  let e' =  if isPrefix && not (null shuffleR)
+            then EList [first, head shuffleR] : tail shuffleR
+            else shuffleF : shuffleR
+  if isPrefix then printTrace $ "Reader: " ++ show e ++ " ==> " ++ show e' else return ()
+  return e'
+shufflePrefixList [] = return []
+
 -- expand top-level form one step, if possible
 expandMacro1 :: Expr -> ComputationM (Maybe Expr)
-expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) =
-  f params >>= lift . lift . return . Just
+expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) = do
+  val <- f params
+  printTrace $ "Inside macroexpand-1: " ++ show e ++ " ==> " ++ show val
+  return . Just $ val
 expandMacro1 e@(EList (f : params)) = do
   env <- get
-  (fval, newSt) <- lift $ lift $ runStateT (runErrorT $ evalExpr f) env
-  put newSt
+  (fval, _) <- lift $ lift $ runStateT (runErrorT $ expandMacro f >>= evalExpr) env
   either (\err -> printTrace ("warning when trying to expand form " ++ show e ++ ": " ++ show err) >> return Nothing) (\val -> if isMacro val then expandMacro1 (EList (val : params)) else return Nothing) fval
 expandMacro1 e = return Nothing
 
@@ -450,14 +495,25 @@ expandMacro e = do
   else
     return topExp
 
+-- the post-expansion evaluation that can take place during the macro expansion stage
+-- TODO: this is currently only 'def' and 'defmacro' expressions at top level
+-- NOTE: this always returns the original expression, even if it was evaluated for
+-- side effects
+macroEvaluable = ["def", "defmacro", "defn"]
+evalMacro :: Expr -> Computation
+evalMacro e@(EList (ESymbol sym : EString _ : _)) | elem sym macroEvaluable =
+  printTrace ("Evaluating during expansion: " ++ show e) >> evalExpr e >> return e
+evalMacro e = return e
+
 main :: IO ()
 main = repl createEmptyEnv
 
 repl :: Env -> IO ()
 repl env = do
   -- we emulate a loading of the prelude at the beginning of REPL
-  (value, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))") env
-  replCont st ""
+  (value, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))")
+    $ env { traceFlag = True }
+  either fail (\_ -> replCont (st { traceFlag = False}) "") value
 
 replCont :: Env -> String -> IO ()
 replCont env parsed = do
@@ -488,9 +544,9 @@ tryReadFile = readFile
 primFuns = [
   "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
   "cons", "first", "type", "seq?", "seq", "conj",
-  "+", "-", "*", "div", "mod", "<", "=", "list",
-  "trace"]
-primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro"]
+  "+", "-", "*", "div", "mod", "<", "=", "list", "count",
+  "trace", "fail"]
+primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro", "backquote"]
 
 makePrimLambda :: String -> Expr
 makePrimLambda name = Fun $ Lambda name ENil ENil $ prim name
@@ -503,21 +559,23 @@ prim :: String -> [Expr] -> Computation
 --
 -- functions, having parameters passed evaluated
 --
-prim "rest" (param : _) = return . EList . tail . seqElems $ param
+prim "rest" (param : _) = return . EList $ rest where
+   elems = seqElems param
+   rest = if null elems then [] else tail . seqElems $ param
 prim "apply" (f : params) = let vals = init params ++ (seqElems $ last params) in
    apply f vals
 prim "print" params = (liftIO . putStr . Str.join "" $ map printShow params) >> return ENil
 prim "eval" (param : _) = evalExpr param
 prim "eval*" (s : _) = do
-     let exprs = seqElems s
-     values <- mapM evalExpr exprs
+     values <- (expandProgram (seqElems s) >>= evalProgram)
      return $ if length values == 0 then ENil else last values
 prim "slurp" ((EString n) : _) = liftIO $ tryReadFile n >>= return . EString
 prim "read*" ((EString s) : _) = readProgram s >>= return . EList
 prim "macroexpand-1" (e : _) = expandMacro1 e >>= maybe (return e) return
 prim "macroexpand" (e : _) = expandMacro e
 prim "cons" (f : s : _) = return $ EList (f : seqElems s)
-prim "first" (s : _) = return . head . seqElems $ s
+prim "first" (s : _) = return $ if null elems then ENil else head elems where
+  elems = seqElems s
 prim "type" (f : _) = return . EString . exprType $ f
 prim "seq?" (s : _) = return . EBool $ isSeq s
 -- NOTE: seq on a map creates a FLAT list of keys and values interleaved!
@@ -534,17 +592,21 @@ prim "mod" s = numHandler (foldl1 mod) s
 prim "<" (p1 : p2 : []) = return $ EBool (p1 < p2)
 prim "=" (p1 : p2 : []) = return $ EBool (p1 == p2)
 prim "list" params = return $ EList params
+prim "count" ((EMap m) : _) = return . ENumber . toInteger . M.size $ m
+prim "count" (s : _) = return . ENumber . toInteger . length . seqElems $ s
 prim "trace" (flag : _) = setTrace (isTruthy flag) >>= return . EBool
+prim "fail" args = fail $ Str.join " " $ map show args
 
 --
 -- special forms, with parameters unevaluated
 --
-prim "def" ((ESymbol var):value:[]) = do
+-- TODO: allow def with zero or more than 1 value arguments
+prim "def" [ESymbol var, value] = do
      evalValue <- evalExpr value
      e <- get
      put $ bindVar e var evalValue
      return evalValue
-prim "do" params = liftM last . mapM evalExpr $ params
+prim "do" params = if null params then return ENil else liftM last . mapM evalExpr $ params
 prim "if" (condPart : thenPart : elsePart : []) = do
      cond <- evalExpr condPart
      evalExpr $ if isTruthy cond then thenPart else elsePart
@@ -555,12 +617,11 @@ prim "dump" _ = do
       return ENil
 prim "quote" (param : _) = do
       return $ param
-prim "unify" (formal : actual : body) = do
-      let doBody = EList (ESymbol "do" : body)
-      ok <- unifyState formal actual
-      if ok then evalExpr doBody else return ENil
+prim "unify" (formal : actual : []) = unifyState formal actual >>= return . EBool
 prim "lambda" (s : body) = do
-      let doBody = (EList (ESymbol "do" : body))
+      let doBody = case body of
+                     [b] -> b
+                     _ -> (EList (ESymbol "do": body))
       ce <- get
       return $ Fun $ Lambda "lambda" s doBody (\actuals -> do
         e <- get
@@ -570,18 +631,24 @@ prim "lambda" (s : body) = do
         val <- evalExpr doBody
         setLocalEnv $ localEnv e
         return val)
+-- TODO: the macro definition is identical to that of "lambda"!
 prim "macro" (s : body) = do
-      let doBody = (EList (ESymbol "do": body))
+      let doBody = case body of
+                     [b] -> b
+                     _ -> (EList (ESymbol "do": body))
       ce <- get
       return $ Macro $ Lambda "macro" s doBody (\actuals -> do
         e <- get
         setLocalEnv $ localEnv ce
         alright <- unifyState s $ EList actuals
-        if alright then return ENil else (throwError $ "Could not bind parameters in " ++ show body)
+        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         expanded <- evalExpr doBody
         setLocalEnv . localEnv $ e
         return expanded)
+prim "backquote" (s : _) = do
+  backquote 1 s
 
+prim fun args = fail $ "Got a strange call of " ++ show fun ++ " on " ++ show args
 
 
 -- Utilities to simplify parsing and evaluating individual expressions
@@ -590,7 +657,11 @@ preludeEnv :: IO Env
 preludeEnv = do
 --  (_, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))") createEmptyEnv
 --  return st
-  return createEmptyEnv
+  let env = bindVar createEmptyEnv "*prefix-symbols*" $ EList $ map ESymbol ["`", "'", "~", "~@"]
+  return $ env { traceFlag = True }
+
+testParseList :: String -> [Expr]
+testParseList = either ((:[]) . EString . show) id . parse parseProgram ""
 
 testParse :: String -> Expr
 testParse = either (EString .show) id . parse parseExpr ""
@@ -607,8 +678,54 @@ testExpand e = do
   (val, _) <- runStateT (runErrorT $ expandMacro e) env
   return $ either EString id val
 
+testShuffle :: [Expr] -> IO [Expr]
+testShuffle e = do
+  env <- preludeEnv
+  (val, _) <- runStateT (runErrorT $ shufflePrefixList e) env
+  return $ either ((:[]) . EString) id val
+
 testEval :: Expr -> IO Expr
 testEval e = do
    env <- preludeEnv
    (val, _) <- runStateT (runErrorT $ evalExpr e) env
    return $ either EString id val
+
+-- backquote tracks the nesting level of backquotes, where 1
+-- indicates that we are at the top level of a backquoted form,
+-- and 0 that we are one unquote down from that, i.e., ready to evaluate
+
+wrapQuote :: Int -> Expr -> Expr
+wrapQuote 0 e = e
+wrapQuote depth e = EList [(ESymbol "quote"), (wrapQuote (depth - 1) e)]
+
+backquote :: Int -> Expr -> Computation
+backquote depth e@(EList [(ESymbol "`"), expr]) = backquote (depth + 1) expr
+backquote 0 e = evalExpr e
+backquote depth e@(EList [ESymbol "~", expr]) = backquote (depth - 1) expr
+backquote depth (EList l) = do
+  rval <- backquoteList depth l
+  return . EList $ rval
+backquote depth x = return $ wrapQuote (depth - 1) x
+
+backquoteList :: Int -> [Expr] -> ComputationM [Expr]
+backquoteList depth (EList [ESymbol "~@", expr] : rest) = do
+  val <- backquote (depth - 1) expr
+  let elems = seqElems val
+  valRest <- backquoteList depth rest
+  return $ elems ++ valRest
+backquoteList depth (f : r) = do
+  fval <- backquote depth f
+  rval <- backquoteList depth r
+  return $ (fval : rval)
+backquoteList _ [] = return []
+
+
+prefixSymbols :: ComputationM [Expr]
+prefixSymbols = do
+  e <- get
+  return $ maybe [] seqElems (getVar e "*prefix-symbols*")
+
+isPrefixSymbol :: Expr -> ComputationM Bool
+isPrefixSymbol e = do
+  syms <- prefixSymbols
+  return $ elem e syms
