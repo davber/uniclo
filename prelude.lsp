@@ -40,7 +40,12 @@
 
 (defn load [path] (eval* (read* (slurp path))))
 
-;; conditions: cond, condp, match
+;; conditions: cond, condp, match, local, let
+
+;; create a local environment which is then discarded upon return
+(defmacro local [& body]
+  `((fn [] ~@body)))
+
 (defmacro cond [& clauses]
   (if (empty? clauses) (quote nil)
     (if (= (count clauses) 1) (first clauses)
@@ -55,7 +60,14 @@
               (condp ~pred ~expr ~@(rest (rest clauses)))))))
 
 (defmacro match [expr & clauses]
-  `(condp unify ~expr ~@clauses))
+  `(local (condp unify ~expr ~@clauses)))
+
+(defmacro let [bindings & body]
+  (match bindings
+    [] `(local ~@body)
+    [var value & rest] `((fn [~var] (let ~(rest (rest bindings)) ~@body)) ~value)
+    (fail "let has to have even number of elemnst in binding: " bindings)))
+    
 
 ;; some arithmetics: <=, >= and >
 
