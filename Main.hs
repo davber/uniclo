@@ -9,6 +9,7 @@ import Text.ParserCombinators.Parsec.Char
 import Text.Parsec.Language (haskellDef)
 import Data.Either
 import Data.Maybe
+import Data.Char
 import qualified Data.Set as S
 import qualified Data.Map as M
 import Data.String.Utils as Str
@@ -41,7 +42,7 @@ instance Show Lambda where
   show (Lambda name params expr _) = name ++
     if isTruthy params then ": " ++ show params ++ " --> " ++ show expr ++ ")" else ""
 type Param = Expr
-data SeqType = SeqList | SeqVector | SeqMap | SeqSet deriving (Show, Read, Eq, Ord)
+data SeqType = SeqList | SeqVector | SeqMap | SeqSet | SeqString  deriving (Show, Read, Eq, Ord)
 leftDelim SeqList = "("
 leftDelim SeqVector = "["
 leftDelim SeqSet = "#{"
@@ -68,6 +69,12 @@ isSeqable (EString _) = True
 isSeqable (EMap _) = True
 isSeqable _ = False
 
+-- can expression contain sub expressions?
+isContainer :: Expr -> Bool
+isContainer e | isSeq e = True
+isContainer (EMap _) = True
+isContainer _ = False
+
 seqType (EList _) = SeqList
 seqType (EVector _) = SeqVector
 seqType (ESet _) = SeqSet
@@ -79,13 +86,21 @@ seqElems (EList es) = es
 seqElems (EVector es) = reverse es
 seqElems (ESet s) = S.elems s
 seqElems (EMap m) = map (\(k,v) -> makeSeq SeqVector [k, v]) $  M.assocs m
-seqElems (EString s) = map (\c -> EString [c]) s
+seqElems (EString s) = map (\c -> EChar c) s
 seqElems x = []
 
 isEmpty :: Expr -> Bool
 isEmpty s = case seqElems s of
   (_:_) -> True
   _ -> False
+
+seqFirst :: Expr -> Expr
+seqFirst e = let elems = seqElems e in
+  if null elems then ENil else head elems
+
+seqRest :: Expr -> [Expr]
+seqRest e = let elems = seqElems e in
+  if null elems then [] else tail elems
 
 -- make a seqable object from a natural sequence of elements for that type
 makeSeq :: SeqType -> [Expr] -> Expr
@@ -116,12 +131,13 @@ conj (EMap m) e = let (k:v:_) = seqElems e in EMap $ M.insert k v m
 conj (ESet s) e = ESet $ S.insert e s
 
 data Expr = EKeyword String (Maybe String) | ESymbol String | ENumber Integer |
-            EString String | EBool Bool | ENil | Fun Lambda | Macro Lambda | ESpecial String Function | EList [Expr] | EVector [Expr] | ESet (S.Set Expr) | EMap (M.Map Expr Expr)
+            EString String | EChar Char | EBool Bool | ENil | Fun Lambda | Macro Lambda | ESpecial String Function | EList [Expr] | EVector [Expr] | ESet (S.Set Expr) | EMap (M.Map Expr Expr)
 instance Show Expr where
   show (EKeyword s Nothing) = ":" ++ s
   show (EKeyword s (Just ns)) = ":" ++ ns ++ "/" ++ s
   show (ESymbol s) = s
   show (EString s) = "\"" ++ s ++ "\""
+  show (EChar c) = "\\" ++ showLitChar c ""
   show (ENumber num) = show num
   show (EBool b) = if b then "true" else "false"
   show ENil = "nil"
@@ -129,18 +145,19 @@ instance Show Expr where
   show (Macro lambda) = show lambda
   show (ESpecial s _) = "[special]" ++ s
   show (EMap m) = "{" ++ Str.join ", " (map (\(k,v) -> show k ++ " " ++ show v) $ M.assocs m) ++ "}"
-  show e | isSeqable e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
+  show e | isContainer e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
     elems = seqElems e
 instance Eq Expr where
   EKeyword ns1 s1 == EKeyword ns2 s2 = ns1 == ns2 && s1 == s2
   ESymbol s1 == ESymbol s2 = s1 == s2 
+  EChar c1 == EChar c2 = c1 == c2
   ENumber num1 == ENumber num2 = num1 == num2
   EString s1 == EString s2 = s1 == s2
   EBool b1 == EBool b2 = b1 == b2
   ENil == ENil = True
   Fun (Lambda n1 p1 e1 _) == Fun (Lambda n2 p2 e2 _) = n1 == n2 && e1 == e2 && p1 == p2
   ESpecial s1 _ == ESpecial s2 _ = s1 == s2
-  seq1 == seq2 | isSeqable seq1 && isSeqable seq2 =
+  seq1 == seq2 | isContainer seq1 && isContainer seq2 =
     seqType seq1 == seqType seq2 && seqElems seq1 == seqElems seq2
   _ == _ = False
 lexico comps = if length diffs == 0 then EQ else head diffs where diffs = filter (/= EQ) comps
@@ -149,7 +166,7 @@ instance Ord Expr where
   ESymbol s1 `compare` ESymbol s2 = s1 `compare` s2
   ENumber s1 `compare` ENumber s2 = s1 `compare` s2
   EString s1 `compare` EString s2 = s1 `compare` s2
-  seq1 `compare` seq2 | isSeqable seq1 && isSeqable seq2 =
+  seq1 `compare` seq2 | isContainer seq1 && isContainer seq2 =
     (seqType seq1, seqElems seq1) `compare` (seqType seq2, seqElems seq2)
   e1 `compare` e2 = show e1 `compare` show e2
 type ParseResult = Either Err [Expr]
@@ -159,6 +176,7 @@ exprType (Fun {}) = "fun"
 exprType (EKeyword {}) = "keyword"
 exprType (ENumber {}) = "number"
 exprType (ESymbol {}) = "symbol"
+exprType (EChar {}) = "char"
 exprType (EString {}) = "string"
 exprType (ENil {}) = "nil"
 exprType (ESpecial {}) = "special"
@@ -333,6 +351,7 @@ ident = P.identifier lexer
 oper = P.operator lexer
 parseProgram = ws *> many parseExpr <* eof
 parsePadExpr = lex parseExpr
+parseChar = EChar . getCharLiteral <$> (char '\\' *> (try ident <|> (anyChar >>= return . (:[]))))
 parseString = EString <$> P.stringLiteral lexer <?> "string"
 parseNumber =  ENumber <$> (try . lex) Num.parseIntegral <?> "number"
 parseKeyword = flipNs .* EKeyword <$>
@@ -342,7 +361,7 @@ parseKeyword = flipNs .* EKeyword <$>
                <?> "keyword"
 parseSymbol = ESymbol <$> lex (ident <|> oper)
               <?> "symbol"
-parseAtom =  choice [parseNumber, parseString, parseKeyword, parseSymbol]
+parseAtom =  choice [parseNumber, parseChar, parseString, parseKeyword, parseSymbol]
              <?> "atom"
 parseSeq seqType = makeSeqFlat seqType <$> 
                    (sym (leftDelim seqType) *> many parseExpr <* sym (rightDelim seqType))
@@ -376,6 +395,7 @@ evalProgram exprs = printTrace "*** Evaluating program ***" >> mapM evalExpr exp
 
 evalExpr :: Expr -> Computation
 evalExpr e@(EKeyword _ _) = return e
+evalExpr e@(EChar _) = return e
 evalExpr (ESymbol sym) = do env <- get
                             let value = getVar env sym
                             maybe (throwError $ "Symbol " ++ sym ++ " had no value") return value
@@ -446,8 +466,9 @@ shufflePrefix defE@(EList [ESymbol "def", ESymbol "*prefix-symbols*", expr]) = d
 shufflePrefix (EList [ESymbol "def", sym, expr]) = do
   expr' <- shufflePrefix expr
   return . EList $ [ESymbol "def", sym, expr']
-shufflePrefix e@(EList elems) = do
-  shufflePrefixList elems >>= return . EList
+shufflePrefix e | isContainer e = do
+  let elems = seqElems e
+  shufflePrefixList elems >>= return . makeSeq (seqType e)
 -- TODO: should we not recurse into other conglomerates?
 shufflePrefix x = return x
 
@@ -489,7 +510,7 @@ expandMacro :: Expr -> Computation
 expandMacro e = do
   topExp <- expandMacroTop e
   let children = seqElems topExp
-  if exprType topExp /= "string" && isSeqable topExp && (not . null) children then do
+  if exprType topExp /= "string" && isContainer topExp && (not . null) children then do
     expChildren <- mapM expandMacro children
     return $ makeSeq (seqType topExp) expChildren
   else
@@ -543,7 +564,7 @@ tryReadFile = readFile
 
 primFuns = [
   "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
-  "cons", "first", "type", "seq?", "seq", "conj",
+  "cons", "first", "type", "seq?", "seqable?", "container?", "seq", "conj",
   "+", "-", "*", "div", "mod", "<", "=", "list", "count",
   "trace", "fail"]
 primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro", "backquote"]
@@ -578,6 +599,8 @@ prim "first" (s : _) = return $ if null elems then ENil else head elems where
   elems = seqElems s
 prim "type" (f : _) = return . EString . exprType $ f
 prim "seq?" (s : _) = return . EBool $ isSeq s
+prim "seqable?" (s : _) = return . EBool $ isSeqable s
+prim "container?" (s : _) = return . EBool $ isContainer s
 -- NOTE: seq on a map creates a FLAT list of keys and values interleaved!
 prim "seq" (s : _) = let elems = seqElems s in
      return $ if null elems then ENil else EList elems
@@ -699,13 +722,11 @@ wrapQuote 0 e = e
 wrapQuote depth e = EList [(ESymbol "quote"), (wrapQuote (depth - 1) e)]
 
 backquote :: Int -> Expr -> Computation
-backquote depth e@(EList [(ESymbol "`"), expr]) = backquote (depth + 1) expr
+backquote depth e@(EList [ESymbol "`", expr]) = backquote (depth + 1) expr
 backquote 0 e = evalExpr e
 backquote depth e@(EList [ESymbol "~", expr]) = backquote (depth - 1) expr
-backquote depth (EList l) = do
-  rval <- backquoteList depth l
-  return . EList $ rval
-backquote depth x = return $ wrapQuote (depth - 1) x
+backquote depth e | isSeq e = backquoteList depth (seqElems e) >>= return . makeSeq (seqType e)
+                  | True = return $ wrapQuote (depth - 1) e
 
 backquoteList :: Int -> [Expr] -> ComputationM [Expr]
 backquoteList depth (EList [ESymbol "~@", expr] : rest) = do
@@ -729,3 +750,12 @@ isPrefixSymbol :: Expr -> ComputationM Bool
 isPrefixSymbol e = do
   syms <- prefixSymbols
   return $ elem e syms
+
+
+
+-- string and char utils
+
+getCharLiteral :: String -> Char
+getCharLiteral [c] = c
+-- TODO: implement properly
+getCharLiteral x = '?'
