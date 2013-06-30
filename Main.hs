@@ -566,6 +566,7 @@ primFuns = [
   "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
   "cons", "first", "type", "seq?", "seqable?", "container?", "seq", "conj",
   "+", "-", "*", "div", "mod", "<", "=", "list", "count",
+  "name", "str",
   "trace", "fail"]
 primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro", "backquote"]
 
@@ -598,6 +599,9 @@ prim "cons" (f : s : _) = return $ EList (f : seqElems s)
 prim "first" (s : _) = return $ if null elems then ENil else head elems where
   elems = seqElems s
 prim "type" (f : _) = return . EString . exprType $ f
+prim "name" (n : _) | isNamed n = return . EString . exprName $ n
+                    | True = fail $ "Cannot get name of " ++ show n
+prim "str" args = return . EString . Str.join "" . map exprStr $ args
 prim "seq?" (s : _) = return . EBool $ isSeq s
 prim "seqable?" (s : _) = return . EBool $ isSeqable s
 prim "container?" (s : _) = return . EBool $ isContainer s
@@ -759,3 +763,19 @@ getCharLiteral :: String -> Char
 getCharLiteral [c] = c
 -- TODO: implement properly
 getCharLiteral x = '?'
+
+isNamed :: Expr -> Bool
+isNamed (EKeyword {}) = True
+isNamed (ESymbol {}) = True
+isNamed (EString {}) = True
+isNamed _ = False
+
+exprName :: Expr -> String
+exprName (EKeyword name _) = name
+exprName (ESymbol name) = name
+exprName (EString s) = s
+
+exprStr :: Expr -> String
+exprStr (EString s) = s
+exprStr (EChar c) = [c]
+exprStr e = show e
