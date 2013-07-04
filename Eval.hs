@@ -146,7 +146,7 @@ expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) = do
   return . Just $ val
 expandMacro1 e@(EList (f : params)) = do
   s <- get
-  (fval, _) <- runComp (expandMacro f >>= evalExpr) s
+  (fval, _) <- lift . lift . runComp (expandMacro f >>= evalExpr) $ s
   either (\err -> printTrace ("warning when trying to expand form " ++ show e ++ ": " ++ show err) >> return Nothing) (\val -> if isMacro val then expandMacro1 (EList (val : params)) else return Nothing) fval
 expandMacro1 e = return Nothing
 

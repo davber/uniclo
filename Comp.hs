@@ -8,9 +8,10 @@ import Control.Monad.Error
 
 import Common
 import qualified Expr
-import qualified State as S
+import qualified CompState as S
 
 newtype CompState = CompState { runCompState :: S.CompState Comp }
+
 type Expr = Expr.GExpr Comp
 type Env = S.Env Comp
 type CompType s = ErrorT Err (StateT s IO)
@@ -49,20 +50,20 @@ setLocalEnv env = do
 getLocal :: String -> Comp (Maybe Expr)
 getLocal name = do
   s <- get
-  return $ S.getLocalVar (runCompState s) name
+  return $ S.getLocalVar name (runCompState s)
 setLocal :: Binding -> Comp ()
 setLocal (name, value) = do
   s <- get
-  let s' = S.bindLocalVar (runCompState s) name value
+  let s' = S.bindLocalVar name value (runCompState s)
   put . CompState $ s'
 getGlobal :: String -> Comp (Maybe Expr)
 getGlobal name = do
   s <- get
-  return $ S.getGlobalVar (runCompState s) name
+  return $ S.getGlobalVar name (runCompState s)
 setGlobal :: Binding -> Comp ()
 setGlobal (name, value) = do
   s <- get
-  let s' = S.bindGlobalVar (runCompState s) name value
+  let s' = S.bindGlobalVar name value (runCompState s)
   put . CompState $ s'
 getLocalBindings :: Comp BindingList
 getLocalBindings = get >>= return . M.assocs . S.compLocalEnv . runCompState
@@ -104,5 +105,6 @@ compShow = do
 
 type CompFun = [Expr] -> Comp Expr
 
-runComp :: Monad m => Comp a -> CompState -> m (Either Err a, CompState)
-runComp m s = runStateT m s
+runComp :: Comp a -> CompState -> IO (Either Err a, CompState)
+runComp m = runStateT (runErrorT m)
+

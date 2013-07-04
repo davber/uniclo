@@ -44,8 +44,8 @@ ws = P.whiteSpace lexer
 sym = P.symbol lexer
 ident = P.identifier lexer
 oper = P.operator lexer
-parseProgram = ws *> many parseGExpr <* eof
-parsePadGExpr = lex parseGExpr
+parseProgram = ws *> many parseExpr <* eof
+parsePadGExpr = lex parseExpr
 parseChar = EChar . getCharLiteral <$> (char '\\' *> (try ident <|> (anyChar >>= return . (:[]))))
 parseString = EString <$> P.stringLiteral lexer <?> "string"
 parseNumber =  ENumber <$> (try . lex) Num.parseIntegral <?> "number"
@@ -59,17 +59,17 @@ parseSymbol = ESymbol <$> lex (ident <|> oper)
 parseAtom =  choice [parseNumber, parseChar, parseString, parseKeyword, parseSymbol]
              <?> "atom"
 parseSeq seqType = makeSeqFlat seqType <$> 
-                   (sym (leftDelim seqType) *> many parseGExpr <* sym (rightDelim seqType))
+                   (sym (leftDelim seqType) *> many parseExpr <* sym (rightDelim seqType))
                    <?> "list"
 parseList = parseSeq SeqList
 parseVector = parseSeq SeqVector
 parseSet = parseSeq SeqSet
 parseMap = parseSeq SeqMap
-parseGExpr = parseList <|> parseVector <|> parseSet <|> parseMap <|> parseAtom
+parseExpr = parseList <|> parseVector <|> parseSet <|> parseMap <|> parseAtom
 
 type ParseResult = forall m. Either Err [GExpr m]
 
 parseProgramText :: String -> ParseResult
 parseProgramText input = either (Left . show) Right $ parse parseProgram "clojure" input
-parseGExprText :: String -> ParseResult
-parseGExprText input = either (Left . show) (Right . (\x -> [x])) $ parse parseGExpr "clojure" input
+parseExprText :: String -> ParseResult
+parseExprText input = either (Left . show) (Right . (\x -> [x])) $ parse parseExpr "clojure" input
