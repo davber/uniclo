@@ -184,7 +184,7 @@ evalMacro e@(EList (ESymbol sym : EString _ : _)) | elem sym macroEvaluable =
 evalMacro e = return e
 
 prefixSymbols :: Comp [Expr]
-prefixSymbols = getSafeGlobal  "*prefix-symbols*" (EList []) >>= return . seqElems
+prefixSymbols = getSafeGlobal "*prefix-symbols*" (EList []) >>= return . seqElems
 
 isPrefixSymbol :: Expr -> Comp Bool
 isPrefixSymbol e = prefixSymbols >>= return . elem e

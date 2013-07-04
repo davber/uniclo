@@ -14,9 +14,9 @@ type EnvHandle = Int
 data CompState m = CompState { compLocalEnv :: Env m, compGlobalEnv :: Env m, compTraceFlag :: Bool }
 
 getGlobalVar :: String -> CompState m -> Maybe (GExpr m)
-getGlobalVar name state = Map.lookup name $ compLocalEnv state
+getGlobalVar name state = Map.lookup name $ compGlobalEnv state
 getLocalVar :: String -> CompState m -> Maybe (GExpr m)
-getLocalVar name state = Map.lookup name $ compGlobalEnv state
+getLocalVar name state = Map.lookup name $ compLocalEnv state
 
 bindGlobalVar :: String -> GExpr m -> CompState m -> CompState m
 bindGlobalVar name value state = state { compGlobalEnv = newEnv } where
