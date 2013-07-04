@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, GADTs, LiberalTypeSynonyms, RankNTypes, ScopedTypeVariables, FlexibleContexts, ImpredicativeTypes #-}
+{-# LANGUAGE Rank2Types #-}
 module Eval where
 
 import Control.Monad.Error
@@ -7,11 +7,10 @@ import Control.Exception
 import qualified Data.String.Utils as Str
 import qualified Data.Map as M
 
-import Common
 import Expr
+import Common
 import Parse
-
-type ExprBindingList = BindingList Expr
+import Comp
 
 --
 -- Environment
@@ -25,7 +24,7 @@ type ExprBindingList = BindingList Expr
 -- Error - State - IO
 
 -- Try unification, yielding a flag if bindings were created
-unifyState :: forall m. Comp m => Expr -> Expr -> m Bool
+unifyState :: Expr -> Expr -> Comp Bool
 unifyState e1 e2 = do
   let (bindings, flag) = maybe ([], False) (\bindings -> (bindings, True)) $ unifyBindings e1 e2
   printTrace $ "Unification: " ++ show e1 ++ " <|> " ++ show e2 ++ " ==> " ++
@@ -34,28 +33,28 @@ unifyState e1 e2 = do
   return flag
 
 -- Unify two terms, having the latest bindings at the front of the list
-unifyBindings :: Expr -> Expr -> Maybe ExprBindingList
+unifyBindings :: Expr -> Expr -> Maybe (BindingList)
 unifyBindings e1 e2 = unify e1 e2 []
 
 -- Unify two tems, with bindings to the left, adding to the existing
 -- binding list
-unify :: Expr -> Expr -> ExprBindingList -> Maybe ExprBindingList
-unify (ESymbol name) value b = Just $ (Binding name value) : b
+unify :: Expr -> Expr -> BindingList -> Maybe (BindingList)
+unify (ESymbol name) value b = Just $ (name, value) : b
 unify s1 s2 b | isSeqable s1 && isSeqable s2 = unifyList (seqElems s1) (seqElems s2) b
 unify s1 s2 b | s1 == s2 = Just b
               | True = Nothing
 
-unifyList :: [Expr] -> [Expr] -> ExprBindingList -> Maybe ExprBindingList
+unifyList :: [Expr] -> [Expr] -> BindingList -> Maybe BindingList
 unifyList [] [] = return
 unifyList (ESymbol "&" : rest : _) other = unify rest (EList other)
 unifyList (f1:r1) (f2:r2) = (\b -> unify f1 f2 b >>= unifyList r1 r2)
 unifyList _ _ = (\_ -> Nothing)
 
 -- applies macro expansion to a program
-expandProgram :: Comp m => [Expr] -> m [Expr]
+expandProgram :: [Expr] -> Comp [Expr]
 expandProgram exprs = printTrace "*** Expanding program ***" >> mapM (\e -> expandMacro e >>= evalMacro) exprs
 -- reading a program both parses and read-expands it
-readProgram :: Comp m => String -> m [Expr]
+readProgram :: String -> Comp [Expr]
 readProgram text = do
   printTrace "*** Parsing program ***"
   either fail (\expr -> printTrace "*** Reading program ***" >> shufflePrefixList expr) $ parseProgramText text
@@ -64,10 +63,10 @@ readProgram text = do
 -- Evaluator, yielding (and executing...) a computation
 --
 
-evalProgram :: Comp m => [Expr] -> m [Expr]
+evalProgram :: [Expr] -> Comp [Expr]
 evalProgram exprs = printTrace "*** Evaluating program ***" >> mapM evalExpr exprs
 
-evalExpr :: Comp m => Expr -> m Expr
+evalExpr :: Expr -> Comp (Expr)
 evalExpr e@(EKeyword _ _) = return e
 evalExpr e@(EChar _) = return e
 evalExpr (ESymbol sym) = do
@@ -91,14 +90,14 @@ evalExpr expr = fail $ "Could not evaluate " ++ show expr
 
 -- evalStr evalues expression by expression, thus allowing for definitions
 -- of reader macros
-evalStr :: Comp m => String -> m [Expr]
+evalStr :: String -> Comp [Expr]
 evalStr s = readProgram s >>= expandProgram >>= evalProgram
 
-num :: Comp m => Expr -> m Integer
+num :: Expr -> Comp Integer
 num (ENumber numb) = return numb
 num e = fail $ show e ++ " is not a number"
 
-apply :: Comp m => Expr -> [Expr] -> m Expr
+apply :: Expr -> [Expr] -> Comp (Expr)
 apply (Fun (Lambda _ _ _ f)) params = mapM evalExpr params >>= f
 apply (Macro (Lambda _ _ _ f)) params = f params >>= evalExpr
 apply (ESpecial _ f) params = f params
@@ -110,10 +109,10 @@ apply other args = fail $ "Not a proper function application: " ++ show (EList (
 -- these prefix symbols!
 --
 
-shufflePrefix :: Comp m => Expr -> m Expr
+shufflePrefix :: Expr -> Comp (Expr)
 shufflePrefix defE@(EList [ESymbol "def", ESymbol "*prefix-symbols*", expr]) = do
   val <- evalExpr expr -- NOTE: usually a literal sequence
-  setGlobal $ Binding "*prefix-symbols*" val
+  setGlobal $ ("*prefix-symbols*", val)
   printTrace $ "Set prefix symbols to " ++ show val
   syms <- prefixSymbols
   return defE
@@ -126,7 +125,7 @@ shufflePrefix e | isContainer e = do
 -- TODO: should we not recurse into other conglomerates?
 shufflePrefix x = return x
 
-shufflePrefixList :: Comp m => [Expr] -> m [Expr]
+shufflePrefixList :: [Expr] -> Comp [Expr]
 -- whenever a prefix symbol is followed by enother one, we deal with it right-associatively
 shufflePrefixList e@(first : rest) = do
   shuffleF <- shufflePrefix first
@@ -140,27 +139,26 @@ shufflePrefixList e@(first : rest) = do
 shufflePrefixList [] = return []
 
 -- expand top-level form one step, if possible
-expandMacro1 :: Comp m => Expr ->  m (Maybe Expr)
+expandMacro1 :: Expr -> Comp (Maybe Expr)
 expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) = do
   val <- f params
   printTrace $ "Inside macroexpand-1: " ++ show e ++ " ==> " ++ show val
   return . Just $ val
 expandMacro1 e@(EList (f : params)) = do
-  s <- getState
+  s <- get
   (fval, _) <- runComp (expandMacro f >>= evalExpr) s
   either (\err -> printTrace ("warning when trying to expand form " ++ show e ++ ": " ++ show err) >> return Nothing) (\val -> if isMacro val then expandMacro1 (EList (val : params)) else return Nothing) fval
 expandMacro1 e = return Nothing
 
-
 -- apply macroexpand-1 repeatedly at top level till it yields no new value
-expandMacroTop :: Comp m => Expr -> m Expr
+expandMacroTop :: Expr -> Comp Expr
 expandMacroTop e = do
   exp <- expandMacro1 e
   if exp == Nothing then return () else printTrace $ "Expansion: " ++ show e ++ " ==> " ++ show exp
   maybe (return e) expandMacro exp
 
 -- apply macroexpand both on top and then recursively inside the form
-expandMacro :: Comp m => Expr -> m Expr
+expandMacro :: Expr -> Comp Expr
 expandMacro e = do
   topExp <- expandMacroTop e
   let children = seqElems topExp
@@ -170,7 +168,7 @@ expandMacro e = do
   else
     return topExp
 
-getSafeGlobal :: Comp m => String -> Expr -> m Expr
+getSafeGlobal :: String -> Expr -> Comp Expr
 getSafeGlobal name def = do
   val <- getGlobal name
   return $ maybe def id val
@@ -180,25 +178,25 @@ getSafeGlobal name def = do
 -- NOTE: this always returns the original expression, even if it was evaluated for
 -- side effects
 macroEvaluable = ["def", "defmacro", "defn"]
-evalMacro :: Comp m => Expr -> m Expr
+evalMacro :: Expr -> Comp Expr
 evalMacro e@(EList (ESymbol sym : EString _ : _)) | elem sym macroEvaluable =
   printTrace ("Evaluating during expansion: " ++ show e) >> evalExpr e >> return e
 evalMacro e = return e
 
-prefixSymbols :: Comp m => m [Expr]
+prefixSymbols :: Comp [Expr]
 prefixSymbols = getSafeGlobal  "*prefix-symbols*" (EList []) >>= return . seqElems
 
-isPrefixSymbol :: Comp m => Expr -> m Bool
+isPrefixSymbol :: Expr -> Comp Bool
 isPrefixSymbol e = prefixSymbols >>= return . elem e
 
-backquote :: Comp m => Int -> Expr -> m Expr
+backquote :: Int -> Expr -> Comp Expr
 backquote depth e@(EList [ESymbol "`", expr]) = backquote (depth + 1) expr
 backquote 0 e = evalExpr e
 backquote depth e@(EList [ESymbol "~", expr]) = backquote (depth - 1) expr
 backquote depth e | isSeq e = backquoteList depth (seqElems e) >>= return . makeSeq (seqType e)
                   | True = return $ wrapQuote (depth - 1) e
 
-backquoteList :: Comp m => Int -> [Expr] -> m [Expr]
+backquoteList :: Int -> [Expr] -> Comp [Expr]
 backquoteList depth (EList [ESymbol "~@", expr] : rest) = do
   val <- backquote (depth - 1) expr
   let elems = seqElems val
@@ -212,13 +210,12 @@ backquoteList _ [] = return []
 
 -- Create an environment only having mappings for special forms and primitive functions
 
-bootstrapState :: Comp m => m ()
+bootstrapState :: Comp ()
 bootstrapState = do
   setTraceFlag False
   mapM_ makePrimLambda primFuns
   mapM_ makePrimSpecial primSpecials
-  mapM_ setGlobal [Binding "nil" ENil, Binding "false" $ EBool False,
-                   Binding "true" $ EBool True]
+  mapM_ setGlobal [("nil", ENil), ("false", EBool False), ("true", EBool True)]
 
 --
 -- primitive functions
@@ -232,13 +229,13 @@ primFuns = [
   "trace", "fail"]
 primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro", "backquote"]
 
-makePrimLambda :: Comp m => String -> m ()
-makePrimLambda name = setGlobal $ Binding name $ Fun $ Lambda name ENil ENil $ prim name
-makePrimSpecial :: Comp m => String -> m ()
-makePrimSpecial name = setGlobal $ Binding name $ ESpecial name $ prim name
+makePrimLambda :: String -> Comp ()
+makePrimLambda name = setGlobal $ (name, Fun $ Lambda name ENil ENil $ prim name)
+makePrimSpecial :: String -> Comp ()
+makePrimSpecial name = setGlobal $ (name, ESpecial name $ prim name)
 
 -- implementations of both functions and specials
-prim :: Comp m => String -> CompFun m
+prim :: String -> CompFun
 --
 -- functions, having parameters passed evaluated
 --
@@ -290,9 +287,9 @@ prim "fail" args = fail $ Str.join " " $ map show args
 --
 -- TODO: allow def with zero or more than 1 value arguments
 prim "def" [ESymbol var, value] = do
-     evalExpr <- evalExpr value
-     setGlobal $ Binding var evalExpr
-     return evalExpr
+     evaled <- evalExpr value
+     setGlobal (var, evaled)
+     return evaled
 prim "do" params = if null params then return ENil else liftM last . mapM evalExpr $ params
 prim "if" (condPart : thenPart : elsePart : []) = do
      cond <- evalExpr condPart
@@ -311,7 +308,8 @@ prim "lambda" (s : body) = do
                      _ -> (EList (ESymbol "do": body))
       outerLocal <- getLocalEnv
       return $ Fun $ Lambda "lambda" s doBody $ (\actuals -> do
-        innerLocal <- setLocalEnv outerLocal
+        innerLocal <- getLocalEnv
+        setLocalEnv outerLocal
         alright <- unifyState s $ EList actuals
         if alright then return ENil else (fail $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         val <- evalExpr doBody
@@ -324,7 +322,8 @@ prim "macro" (s : body) = do
                      _ -> (EList (ESymbol "do": body))
       outerLocal <- getLocalEnv
       return $ Macro $ Lambda "macro" s doBody $ (\actuals -> do
-        innerLocal <- setLocalEnv outerLocal                
+        innerLocal <- getLocalEnv
+        setLocalEnv outerLocal                
         alright <- unifyState s $ EList actuals
         if alright then return ENil else (fail $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         expanded <- evalExpr doBody
@@ -335,7 +334,7 @@ prim "backquote" (s : _) = do
 
 prim fun args = fail $ "Got a strange call of " ++ show fun ++ " on " ++ show args
 
-numHandler :: ([Integer] -> Integer) -> CompFun m
+numHandler :: ([Integer] -> Integer) -> CompFun
 numHandler f params = do
   nums <- mapM num params
   return $ ENumber $ f nums
