@@ -48,23 +48,22 @@ setLocalEnv env = do
 -- access to variables
 --
 getLocal :: String -> Comp (Maybe Expr)
-getLocal name = do
-  s <- get
-  return $ S.getLocalVar name (runCompState s)
+getLocal name = get >>= return . S.getLocalVar name . runCompState
 setLocal :: Binding -> Comp ()
 setLocal (name, value) = do
   s <- get
-  let s' = S.bindLocalVar name value (runCompState s)
+  let s' = S.bindLocalVar name value . runCompState $ s
   put . CompState $ s'
 getGlobal :: String -> Comp (Maybe Expr)
-getGlobal name = do
-  s <- get
-  return $ S.getGlobalVar name (runCompState s)
+getGlobal name = get >>= return . S.getGlobalVar name . runCompState
 setGlobal :: Binding -> Comp ()
 setGlobal (name, value) = do
   s <- get
-  let s' = S.bindGlobalVar name value (runCompState s)
+  let s' = S.bindGlobalVar name value . runCompState $ s
   put . CompState $ s'
+getVar :: String -> Comp (Maybe Expr)
+getVar name = getLocal name >>=
+  maybe (getGlobal name) (return . Just)
 getLocalBindings :: Comp BindingList
 getLocalBindings = get >>= return . M.assocs . S.compLocalEnv . runCompState
 getGlobalBindings :: Comp BindingList

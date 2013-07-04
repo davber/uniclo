@@ -10,6 +10,7 @@ import qualified Data.Map as M
 import Expr
 import Common
 import Parse
+import qualified CompState as S
 import Comp
 
 --
@@ -57,7 +58,7 @@ expandProgram exprs = printTrace "*** Expanding program ***" >> mapM (\e -> expa
 readProgram :: String -> Comp [Expr]
 readProgram text = do
   printTrace "*** Parsing program ***"
-  either fail (\expr -> printTrace "*** Reading program ***" >> shufflePrefixList expr) $ parseProgramText text
+  either throwError (\expr -> printTrace "*** Reading program ***" >> shufflePrefixList expr) $ parseProgramText text
 
 --
 -- Evaluator, yielding (and executing...) a computation
@@ -69,9 +70,8 @@ evalProgram exprs = printTrace "*** Evaluating program ***" >> mapM evalExpr exp
 evalExpr :: Expr -> Comp (Expr)
 evalExpr e@(EKeyword _ _) = return e
 evalExpr e@(EChar _) = return e
-evalExpr (ESymbol sym) = do
-  val <- getLocal sym
-  return $ maybe ENil id val
+evalExpr (ESymbol sym) = getVar sym >>=
+  maybe (fail $ "Could not find variable " ++ sym) return
 evalExpr e@(EList (f : params)) = do
   fun <- evalExpr f
   res <- apply fun params
@@ -86,7 +86,7 @@ evalExpr e@ENil = return e
 evalExpr e | isSeqable e = do
   vals <- mapM evalExpr $ seqElems e
   return $ makeSeq (seqType e) vals
-evalExpr expr = fail $ "Could not evaluate " ++ show expr
+evalExpr expr = throwError $ "Could not evaluate " ++ show expr
 
 -- evalStr evalues expression by expression, thus allowing for definitions
 -- of reader macros
@@ -95,13 +95,13 @@ evalStr s = readProgram s >>= expandProgram >>= evalProgram
 
 num :: Expr -> Comp Integer
 num (ENumber numb) = return numb
-num e = fail $ show e ++ " is not a number"
+num e = throwError $ show e ++ " is not a number"
 
 apply :: Expr -> [Expr] -> Comp (Expr)
 apply (Fun (Lambda _ _ _ f)) params = mapM evalExpr params >>= f
 apply (Macro (Lambda _ _ _ f)) params = f params >>= evalExpr
 apply (ESpecial _ f) params = f params
-apply other args = fail $ "Not a proper function application: " ++ show (EList (other : args))
+apply other args = throwError $ "Not a proper function application: " ++ show (EList (other : args))
 
 --
 -- Reader prefix reshuffling, which makes prefix symbols regular prefix forms
@@ -210,12 +210,18 @@ backquoteList _ [] = return []
 
 -- Create an environment only having mappings for special forms and primitive functions
 
-bootstrapState :: Comp ()
-bootstrapState = do
+bootstrap :: Comp ()
+bootstrap = do
+  put . CompState $ S.emptyState
   setTraceFlag False
   mapM_ makePrimLambda primFuns
   mapM_ makePrimSpecial primSpecials
   mapM_ setGlobal [("nil", ENil), ("false", EBool False), ("true", EBool True)]
+
+bootstrapState :: IO CompState
+bootstrapState = do
+  (_, st) <- runComp bootstrap (CompState S.emptyState)
+  return st
 
 --
 -- primitive functions
@@ -258,7 +264,7 @@ prim "first" (s : _) = return $ if null elems then ENil else head elems where
   elems = seqElems s
 prim "type" (f : _) = return . EString . exprType $ f
 prim "name" (n : _) | isNamed n = return . EString . exprName $ n
-                    | True = fail $ "Cannot get name of " ++ show n
+                    | True = throwError $ "Cannot get name of " ++ show n
 prim "str" args = return . EString . Str.join "" . map exprStr $ args
 prim "seq?" (s : _) = return . EBool $ isSeq s
 prim "seqable?" (s : _) = return . EBool $ isSeqable s
@@ -280,7 +286,7 @@ prim "list" params = return $ EList params
 prim "count" ((EMap m) : _) = return . ENumber . toInteger . M.size $ m
 prim "count" (s : _) = return . ENumber . toInteger . length . seqElems $ s
 prim "trace" (flag : _) = setTraceFlag (isTruthy flag) >>= return . EBool
-prim "fail" args = fail $ Str.join " " $ map show args
+prim "fail" args = throwError $ Str.join " " $ map show args
 
 --
 -- special forms, with parameters unevaluated
@@ -311,7 +317,7 @@ prim "lambda" (s : body) = do
         innerLocal <- getLocalEnv
         setLocalEnv outerLocal
         alright <- unifyState s $ EList actuals
-        if alright then return ENil else (fail $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
+        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         val <- evalExpr doBody
         setLocalEnv innerLocal
         return val)
@@ -325,14 +331,14 @@ prim "macro" (s : body) = do
         innerLocal <- getLocalEnv
         setLocalEnv outerLocal                
         alright <- unifyState s $ EList actuals
-        if alright then return ENil else (fail $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
+        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         expanded <- evalExpr doBody
         setLocalEnv innerLocal
         return expanded)
 prim "backquote" (s : _) = do
   backquote 1 s
 
-prim fun args = fail $ "Got a strange call of " ++ show fun ++ " on " ++ show args
+prim fun args = throwError $ "Got a strange call of " ++ show fun ++ " on " ++ show args
 
 numHandler :: ([Integer] -> Integer) -> CompFun
 numHandler f params = do
@@ -344,4 +350,4 @@ numHandler f params = do
 tryReadFile :: String -> IO String
 tryReadFile = readFile
 -- tryReadFile n = catch (readFile n)
---                     (\e -> fail "Could not open file " ++ n ++ " due to: " ++ show (e :: IOException))
+--                     (\e -> throwError "Could not open file " ++ n ++ " due to: " ++ show (e :: IOException))
