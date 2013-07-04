@@ -1,6 +1,5 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, InstanceSigs, MultiParamTypeClasses, FlexibleContexts #-}
 module Comp where
-
 import qualified Data.Map as M
 import Data.List((!!))
 import Control.Monad.State

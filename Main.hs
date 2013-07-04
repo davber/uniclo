@@ -15,14 +15,10 @@ import qualified CompState as S
 import Comp
 
 main :: IO ()
-main = bootstrapState >>= repl
+main = preludeEnv >>= repl
 
 repl :: CompState -> IO ()
-repl env = do
-  -- we emulate a loading of the prelude at the beginning of REPL
-  (value, st) <- runComp (evalStr "(eval* (read* (slurp \"prelude.lsp\")))")
-    $ CompState . S.setTrace True . runCompState $ env
-  either fail (\_ -> replCont (CompState . S.setTrace False . runCompState $ env) "") value
+repl env = replCont env ""
 
 replCont :: CompState -> String -> IO ()
 replCont env parsed = do
@@ -43,10 +39,11 @@ replEval env parsed = do
 
 preludeEnv :: IO CompState
 preludeEnv = do
---  (_, st) <- runStateT (runErrorT $ evalStr "(eval* (read* (slurp \"prelude.lsp\")))") createEmptyEnv
---  return st
-  let env = S.bindGlobalVar "*prefix-symbols*" (EList $ map ESymbol ["`", "'", "~", "~@"]) S.emptyState
-  return . CompState $ S.setTrace True env
+  (_, st) <- runComp (bootstrap >>
+                      setTraceFlag True >>
+                      evalStr "(eval* (read* (slurp \"prelude.lsp\")))" >>
+                      setTraceFlag False) . CompState $ S.emptyState
+  return st
 
 testParseList :: String -> [Expr]
 testParseList = either ((:[]) . EString . show) id . parse parseProgram ""

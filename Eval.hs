@@ -217,6 +217,8 @@ bootstrap = do
   mapM_ makePrimLambda primFuns
   mapM_ makePrimSpecial primSpecials
   mapM_ setGlobal [("nil", ENil), ("false", EBool False), ("true", EBool True)]
+  setGlobal ("*prefix-symbols*",
+             (EList $ map ESymbol ["`", "'", "~", "~@"]))
 
 bootstrapState :: IO CompState
 bootstrapState = do
