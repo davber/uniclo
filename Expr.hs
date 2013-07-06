@@ -8,33 +8,32 @@ import qualified Data.Set as S
 import qualified Data.Map as M
 import Data.Char
 
-type GCompFun m = [GExpr m] -> m (GExpr m)
-data Lambda m = Lambda { lambdaName :: String,
-                         lambdaParams :: GExpr m,
-                         lambdaBody :: GExpr m,
-                         lambdaFun :: GCompFun m }
+data Lambda = Lambda { lambdaName :: String,
+                       lambdaParams :: Expr,
+                       lambdaBody :: Expr }
 
-instance Show (Lambda m) where
-  show (Lambda name params expr _) = name ++
+instance Show Lambda where
+  show (Lambda name params expr) = name ++
     if isTruthy params then ": " ++ show params ++ " --> " ++ show expr ++ ")" else ""
 
-data GExpr m where
-  EKeyword :: String -> (Maybe String) -> GExpr m
-  ESymbol :: String -> GExpr m
-  ENumber :: Integer -> GExpr m
-  EString :: String -> GExpr m
-  EChar :: Char -> GExpr m
-  EBool :: Bool -> GExpr m
-  ENil :: GExpr m
-  Fun :: Lambda m -> GExpr m
-  Macro :: Lambda m -> GExpr m
-  ESpecial :: String -> GCompFun m -> GExpr m
-  EList :: [GExpr m] -> GExpr m
-  EVector :: [GExpr m] -> GExpr m
-  ESet :: S.Set (GExpr m) -> GExpr m
-  EMap :: M.Map (GExpr m) (GExpr m) -> GExpr m
+data Expr where
+  EKeyword :: String -> (Maybe String) -> Expr
+  ESymbol :: String -> Expr
+  ENumber :: Integer -> Expr
+  EString :: String -> Expr
+  EChar :: Char -> Expr
+  EBool :: Bool -> Expr
+  ENil :: Expr
+  Fun :: Lambda -> Expr
+  Macro :: Lambda -> Expr
+  ESpecial :: String -> Expr
+  EPrim :: String -> Expr
+  EList :: [Expr] -> Expr
+  EVector :: [Expr] -> Expr
+  ESet :: S.Set (Expr) -> Expr
+  EMap :: M.Map (Expr) (Expr) -> Expr
 
-instance Show (GExpr m) where
+instance Show Expr where
   show (EKeyword s Nothing) = ":" ++ s
   show (EKeyword s (Just ns)) = ":" ++ ns ++ "/" ++ s
   show (ESymbol s) = s
@@ -45,12 +44,12 @@ instance Show (GExpr m) where
   show ENil = "nil"
   show (Fun lambda@(Lambda {})) = "[fun]" ++ show lambda
   show (Macro lambda@(Lambda {})) = show lambda
-  show (ESpecial s _) = "[special]" ++ s
+  show (ESpecial s) = "[special]" ++ s
   show (EMap m) = "{" ++ Str.join ", " (map (\(k,v) -> show k ++ " " ++ show v) $ M.assocs m) ++ "}"
   show e | isContainer e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
     elems = seqElems e
 
-instance Eq (GExpr m) where
+instance Eq Expr where
   EKeyword ns1 s1 == EKeyword ns2 s2 = ns1 == ns2 && s1 == s2
   ESymbol s1 == ESymbol s2 = s1 == s2 
   EChar c1 == EChar c2 = c1 == c2
@@ -58,14 +57,14 @@ instance Eq (GExpr m) where
   EString s1 == EString s2 = s1 == s2
   EBool b1 == EBool b2 = b1 == b2
   ENil == ENil = True
-  Fun (Lambda n1 p1 e1 _) == Fun (Lambda n2 p2 e2 _) = n1 == n2 && e1 == e2 && p1 == p2
-  ESpecial s1 _ == ESpecial s2 _ = s1 == s2
+  Fun (Lambda n1 p1 e1) == Fun (Lambda n2 p2 e2) = n1 == n2 && e1 == e2 && p1 == p2
+  ESpecial s1 == ESpecial s2 = s1 == s2
   seq1 == seq2 | isContainer seq1 && isContainer seq2 =
     seqType seq1 == seqType seq2 && seqElems seq1 == seqElems seq2
   _ == _ = False
 lexico comps = if length diffs == 0 then EQ else head diffs where diffs = filter (/= EQ) comps
 
-instance Ord (GExpr m) where
+instance Ord Expr where
   EKeyword ns1 s1 `compare` EKeyword ns2 s2 = lexico [ns1 `compare` ns2, s1 `compare` s2]
   ESymbol s1 `compare` ESymbol s2 = s1 `compare` s2
   ENumber s1 `compare` ENumber s2 = s1 `compare` s2
@@ -90,34 +89,34 @@ rightDelim SeqMap = "}"
 
 -- is the expression a proper sequence already?
 -- NOTE: expressions can be seqable, turned into a sequence by seqElems
-isSeq :: GExpr m -> Bool
-isSeq (EList _) = True
-isSeq (EVector _) = True
-isSeq (ESet _) = True
-isSeq (EMap _) = False
-isSeq (EString _) = False
+isSeq :: Expr -> Bool
+isSeq (EList {}) = True
+isSeq (EVector {}) = True
+isSeq (ESet {}) = True
+isSeq (EMap {}) = False
+isSeq (EString {}) = False
 isSeq _ = False
 
 -- is the expression comvertible into a sequence, i.e., seqable?
-isSeqable :: GExpr m -> Bool
+isSeqable :: Expr -> Bool
 isSeqable e | isSeq e = True
-isSeqable (EString _) = True
-isSeqable (EMap _) = True
+isSeqable (EString {}) = True
+isSeqable (EMap {}) = True
 isSeqable _ = False
 
 -- can expression contain sub expressions?
-isContainer :: GExpr m -> Bool
+isContainer :: Expr -> Bool
 isContainer e | isSeq e = True
-isContainer (EMap _) = True
+isContainer (EMap {}) = True
 isContainer _ = False
 
-seqType :: GExpr m -> SeqType
-seqType (EList _) = SeqList
-seqType (EVector _) = SeqVector
-seqType (ESet _) = SeqSet
-seqType (EMap _) = SeqMap
+seqType :: Expr -> SeqType
+seqType (EList {}) = SeqList
+seqType (EVector {}) = SeqVector
+seqType (ESet {}) = SeqSet
+seqType (EMap {}) = SeqMap
 
-seqElems :: GExpr m -> [GExpr m]
+seqElems :: Expr -> [Expr]
 seqElems (EList es) = es
 -- NOTE: the elements are stored in reverse inside the vector construct
 seqElems (EVector es) = reverse es
@@ -126,21 +125,21 @@ seqElems (EMap m) = map (\(k,v) -> makeSeq SeqVector [k, v]) $  M.assocs m
 seqElems (EString s) = map (\c -> EChar c) s
 seqElems x = []
 
-isEmpty :: GExpr m -> Bool
+isEmpty :: Expr -> Bool
 isEmpty s = case seqElems s of
   (_:_) -> True
   _ -> False
 
-seqFirst :: GExpr m -> GExpr m
+seqFirst :: Expr -> Expr
 seqFirst e = let elems = seqElems e in
   if null elems then ENil else head elems
 
-seqRest :: GExpr m -> [GExpr m]
+seqRest :: Expr -> [Expr]
 seqRest e = let elems = seqElems e in
   if null elems then [] else tail elems
 
 -- make a seqable object from a natural sequence of elements for that type
-makeSeq :: SeqType -> [GExpr m] -> GExpr m
+makeSeq :: SeqType -> [Expr] -> Expr
 makeSeq SeqList = EList
 makeSeq SeqSet = ESet . S.fromList
 makeSeq SeqVector = EVector . reverse
@@ -148,22 +147,22 @@ makeSeq SeqVector = EVector . reverse
 makeSeq SeqMap = EMap . M.fromList . map (\elem -> let (k:v:[]) = seqElems elem in (k,v))
 
 -- create pairs of consecutive elements, in the form of EVectors
-pairs :: [GExpr m] -> [GExpr m]
+pairs :: [Expr] -> [Expr]
 pairs [] = []
 pairs (a:b:r) = makeSeq SeqVector [a, b] : pairs r
 pairs [a] = [makeSeq SeqVector [a, ENil]] -- TODO: ad hoc for a strange case...
 
 -- make a seqable object from a flat list of elements
-makeSeqFlat :: SeqType -> [GExpr m] -> GExpr m
+makeSeqFlat :: SeqType -> [Expr] -> Expr
 makeSeqFlat SeqMap = makeSeq SeqMap . pairs
 makeSeqFlat seqType = makeSeq seqType
 
-isTruthy :: GExpr m -> Bool
+isTruthy :: Expr -> Bool
 isTruthy ENil = False
 isTruthy (EBool False) = False
 isTruthy _ = True
 
-exprType :: GExpr m -> String
+exprType :: Expr -> String
 exprType (Fun {}) = "fun"
 exprType (EKeyword {}) = "keyword"
 exprType (ENumber {}) = "number"
@@ -179,19 +178,19 @@ exprType (ESet {}) = "set"
 exprType e | isSeqable e = "seq"
 exprType e = "none"
 
-printShow :: GExpr m -> String
+printShow :: Expr -> String
 printShow (EString s) = s
 printShow x = show x
 
 flipNs (EKeyword ns (Just s)) = EKeyword s (Just ns)
 flipNs x = x
 
-isSpecial :: GExpr m -> Bool
-isSpecial (ESpecial _ _) = True
+isSpecial :: Expr -> Bool
+isSpecial (ESpecial {}) = True
 isSpecial _ = False
 
-isMacro :: GExpr m -> Bool
-isMacro (Macro _) = True
+isMacro :: Expr -> Bool
+isMacro (Macro {}) = True
 isMacro _ = False
 
 -- string and char utils
@@ -201,18 +200,18 @@ getCharLiteral [c] = c
 -- TODO: implement properly
 getCharLiteral x = '?'
 
-isNamed :: GExpr m -> Bool
+isNamed :: Expr -> Bool
 isNamed (EKeyword {}) = True
 isNamed (ESymbol {}) = True
 isNamed (EString {}) = True
 isNamed _ = False
 
-exprName :: GExpr m -> String
+exprName :: Expr -> String
 exprName (EKeyword name _) = name
 exprName (ESymbol name) = name
 exprName (EString s) = s
 
-exprStr :: GExpr m -> String
+exprStr :: Expr -> String
 exprStr (EString s) = s
 exprStr (EChar c) = [c]
 exprStr e = show e
@@ -221,15 +220,15 @@ exprStr e = show e
 -- indicates that we are at the top level of a backquoted form,
 -- and 0 that we are one unquote down from that, i.e., ready to evaluate
 
-wrapQuote :: Int -> GExpr m -> GExpr m
+wrapQuote :: Int -> Expr -> Expr
 wrapQuote 0 e = e
 wrapQuote depth e = EList [(ESymbol "quote"), (wrapQuote (depth - 1) e)]
 
-name :: GExpr m -> Maybe String
+name :: Expr -> Maybe String
 name (ESymbol s) = Just s
 name _ = Nothing
 
-conj :: GExpr m -> GExpr m -> GExpr m
+conj :: Expr -> Expr -> Expr
 conj (EList s) e = EList (e:s)
 -- NOTE: the vector is stored in reverse inside the construct
 conj (EVector s) e = EVector (e : s)

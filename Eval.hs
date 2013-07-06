@@ -80,7 +80,7 @@ evalExpr e@(EList (f : params)) = do
 evalExpr e@(ENumber n) = return e
 evalExpr e@(EString s) = return e
 evalExpr e@(Fun f) = return e
-evalExpr e@(ESpecial n s) = return e
+evalExpr e@(ESpecial n) = return e
 evalExpr e@(Macro f) = return e
 evalExpr e@ENil = return e
 evalExpr e | isSeqable e = do
@@ -98,9 +98,9 @@ num (ENumber numb) = return numb
 num e = throwError $ show e ++ " is not a number"
 
 apply :: Expr -> [Expr] -> Comp (Expr)
-apply (Fun (Lambda _ _ _ f)) params = mapM evalExpr params >>= f
-apply (Macro (Lambda _ _ _ f)) params = f params >>= evalExpr
-apply (ESpecial _ f) params = f params
+apply (Fun (Lambda _name formals body)) params = mapM evalExpr params >>= (\ps -> unifyState formals (EList ps)) >> evalExpr body
+apply (Macro (Lambda _name formals body)) params = unifyState formals (EList params) >> evalExpr body
+apply (ESpecial name) params = prim name params
 apply other args = throwError $ "Not a proper function application: " ++ show (EList (other : args))
 
 --
@@ -140,8 +140,9 @@ shufflePrefixList [] = return []
 
 -- expand top-level form one step, if possible
 expandMacro1 :: Expr -> Comp (Maybe Expr)
-expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) = do
-  val <- f params
+expandMacro1 e@(EList ((Macro (Lambda _name formals body)) : params)) = do
+  unifyState formals (EList params)
+  val <- evalExpr body
   printTrace $ "Inside macroexpand-1: " ++ show e ++ " ==> " ++ show val
   return . Just $ val
 expandMacro1 e@(EList (f : params)) = do
@@ -238,9 +239,9 @@ primFuns = [
 primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro", "backquote"]
 
 makePrimLambda :: String -> Comp ()
-makePrimLambda name = setGlobal $ (name, Fun $ Lambda name ENil ENil $ prim name)
+makePrimLambda name = setGlobal $ (name, EPrim  name)
 makePrimSpecial :: String -> Comp ()
-makePrimSpecial name = setGlobal $ (name, ESpecial name $ prim name)
+makePrimSpecial name = setGlobal $ (name, ESpecial name)
 
 -- implementations of both functions and specials
 prim :: String -> CompFun

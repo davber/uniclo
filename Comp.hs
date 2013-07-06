@@ -6,18 +6,17 @@ import Control.Monad.State
 import Control.Monad.Error
 
 import Common
-import qualified Expr
+import Expr
 import qualified CompState as S
 
-newtype CompState = CompState { runCompState :: S.CompState Comp }
+newtype CompState = CompState { runCompState :: S.CompState }
+type Env = S.Env
 
-type Expr = Expr.GExpr Comp
-type Env = S.Env Comp
 type CompType s = ErrorT Err (StateT s IO)
 type Comp = CompType CompState
 
-type Binding = S.Binding Comp
-type BindingList = S.BindingList Comp
+type Binding = S.Binding
+type BindingList = S.BindingList
 
 -- Computations can either (i) yield a value or (ii) yield an error
 -- AND can also interact with the environment

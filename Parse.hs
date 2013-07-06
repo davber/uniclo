@@ -67,7 +67,7 @@ parseSet = parseSeq SeqSet
 parseMap = parseSeq SeqMap
 parseExpr = parseList <|> parseVector <|> parseSet <|> parseMap <|> parseAtom
 
-type ParseResult = forall m. Either Err [GExpr m]
+type ParseResult = Either Err [Expr]
 
 parseProgramText :: String -> ParseResult
 parseProgramText input = either (Left . show) Right $ parse parseProgram "clojure" input
