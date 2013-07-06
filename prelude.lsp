@@ -1,9 +1,13 @@
-;; Some trivial functions: identity
-(def identity (lambda (x) x))
-
 ;; specifying symbols that precedes their argument, which will
 ;; be expanded during the expansion phase
 (def *prefix-symbols* [(quote `) (quote ~@) (quote ~) (quote ')])
+;; symbols that are infix
+(def *infix-symbols* [(quote +)])
+
+;; Some trivial functions: identity
+(def identity (lambda (x) x))
+(def list (lambda x x))
+
 ;; some meta functions: ` and '
 (def ` backquote)
 (def ' quote)

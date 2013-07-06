@@ -58,7 +58,7 @@ expandProgram exprs = printTrace "*** Expanding program ***" >> mapM (\e -> expa
 readProgram :: String -> Comp [Expr]
 readProgram text = do
   printTrace "*** Parsing program ***"
-  either throwError (\expr -> printTrace "*** Reading program ***" >> shufflePrefixList expr) $ parseProgramText text
+  either throwError (\expr -> printTrace "*** Reading program ***" >> shufflePrefixList expr >>= shuffleInfixList True) $ parseProgramText text
 
 --
 -- Evaluator, yielding (and executing...) a computation
@@ -77,11 +77,9 @@ evalExpr e@(EList (f : params)) = do
   res <- apply fun params
   printTrace $ "Reduction: " ++ show e ++ " ==> " ++ show res
   return res
-evalExpr e@(ENumber n) = return e
-evalExpr e@(EString s) = return e
-evalExpr e@(Fun f) = return e
-evalExpr e@(ESpecial n s) = return e
-evalExpr e@(Macro f) = return e
+evalExpr e@(ENumber {}) = return e
+evalExpr e@(EString {}) = return e
+evalExpr e@(Fun {}) = return e
 evalExpr e@ENil = return e
 evalExpr e | isSeqable e = do
   vals <- mapM evalExpr $ seqElems e
@@ -98,9 +96,7 @@ num (ENumber numb) = return numb
 num e = throwError $ show e ++ " is not a number"
 
 apply :: Expr -> [Expr] -> Comp (Expr)
-apply (Fun (Lambda _ _ _ f)) params = mapM evalExpr params >>= f
-apply (Macro (Lambda _ _ _ f)) params = f params >>= evalExpr
-apply (ESpecial _ f) params = f params
+apply (Fun { funFun = (Just f), funType = fType }) params = mapM (if funByName fType then return else evalExpr) params >>= f
 apply other args = throwError $ "Not a proper function application: " ++ show (EList (other : args))
 
 --
@@ -110,11 +106,10 @@ apply other args = throwError $ "Not a proper function application: " ++ show (E
 --
 
 shufflePrefix :: Expr -> Comp (Expr)
-shufflePrefix defE@(EList [ESymbol "def", ESymbol "*prefix-symbols*", expr]) = do
+shufflePrefix defE@(EList [ESymbol "def", ESymbol fixSymbols, expr]) | elem fixSymbols ["*prefix-symbols*", "*infix-symbols*"] = do
   val <- evalExpr expr -- NOTE: usually a literal sequence
-  setGlobal $ ("*prefix-symbols*", val)
+  setGlobal $ (fixSymbols, val)
   printTrace $ "Set prefix symbols to " ++ show val
-  syms <- prefixSymbols
   return defE
 shufflePrefix (EList [ESymbol "def", sym, expr]) = do
   expr' <- shufflePrefix expr
@@ -138,9 +133,43 @@ shufflePrefixList e@(first : rest) = do
   return e'
 shufflePrefixList [] = return []
 
+shuffleInfix :: Expr -> Comp Expr
+shuffleInfix (EList [ESymbol "def", sym, expr]) = do
+  expr' <- shufflePrefix expr
+  return . EList $ [ESymbol "def", sym, expr']
+shuffleInfix (EList es@[arg1, infixS, arg2]) = do
+  isInfix <- isInfixSymbol infixS
+  if isInfix then do
+    a1 <- shuffleInfix arg1
+    a2 <- shuffleInfix arg2
+    return . EList $ [infixS, a1, a2]
+  else
+    liftM EList $ shuffleInfixList True es
+shuffleInfix e | isContainer e = do
+  let elems = seqElems e
+  shuffleInfixList True elems >>= return . makeSeq (seqType e)
+shuffleInfix e = return e
+
+shuffleInfixList :: Bool -> [Expr] -> Comp [Expr]
+shuffleInfixList shouldShuffleFirst e@(f : e2@(infixS : s : rest)) = do
+  isInfix <- isInfixSymbol infixS
+  printTrace $ "Got an infix symbol: " ++ show infixS
+  arg1 <- if shouldShuffleFirst then shuffleInfix f else return f
+  if isInfix then do
+    arg2 <- shuffleInfix s
+    shuffleInfixList False $ EList [infixS, arg1, arg2] : rest
+  else do
+    restE <- shuffleInfixList True e2
+    return $ arg1 : restE
+shuffleInfixList _ [] = return []
+shuffleInfixList shouldShuffleFirst (f : r) = do
+  f' <- if shouldShuffleFirst then shuffleInfix f else return f
+  r' <- shuffleInfixList True r
+  return $ f' : r'
+  
 -- expand top-level form one step, if possible
 expandMacro1 :: Expr -> Comp (Maybe Expr)
-expandMacro1 e@(EList ((Macro (Lambda n _ _ f)) : params)) = do
+expandMacro1 e@(EList ((Fun { funName = n, funFun = (Just f), funType = fType }) : params)) | isMacroType fType = do
   val <- f params
   printTrace $ "Inside macroexpand-1: " ++ show e ++ " ==> " ++ show val
   return . Just $ val
@@ -189,6 +218,12 @@ prefixSymbols = getSafeGlobal "*prefix-symbols*" (EList []) >>= return . seqElem
 isPrefixSymbol :: Expr -> Comp Bool
 isPrefixSymbol e = prefixSymbols >>= return . elem e
 
+infixSymbols :: Comp [Expr]
+infixSymbols = getSafeGlobal "*infix-symbols*" (EList []) >>= return . seqElems
+
+isInfixSymbol :: Expr -> Comp Bool
+isInfixSymbol e = infixSymbols >>= return . elem e
+
 backquote :: Int -> Expr -> Comp Expr
 backquote depth e@(EList [ESymbol "`", expr]) = backquote (depth + 1) expr
 backquote 0 e = evalExpr e
@@ -232,15 +267,15 @@ bootstrapState = do
 primFuns = [
   "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
   "cons", "first", "type", "seq?", "seqable?", "container?", "seq", "conj",
-  "+", "-", "*", "div", "mod", "<", "=", "list", "count",
+  "+", "-", "*", "div", "mod", "<", "=", "count",
   "name", "str",
   "trace", "fail"]
 primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro", "backquote"]
 
 makePrimLambda :: String -> Comp ()
-makePrimLambda name = setGlobal $ (name, Fun $ Lambda name ENil ENil $ prim name)
+makePrimLambda name = setGlobal $ (name, Fun { funLambda = Nothing, funName = Just name, funFun = Just $ prim name, funType = funFunType })
 makePrimSpecial :: String -> Comp ()
-makePrimSpecial name = setGlobal $ (name, ESpecial name $ prim name)
+makePrimSpecial name = setGlobal $ (name, Fun { funLambda = Nothing, funName = Just name, funFun = Just $ prim name, funType = specialFunType })
 
 -- implementations of both functions and specials
 prim :: String -> CompFun
@@ -284,7 +319,6 @@ prim "div" s = numHandler (foldl1 div) s
 prim "mod" s = numHandler (foldl1 mod) s
 prim "<" (p1 : p2 : []) = return $ EBool (p1 < p2)
 prim "=" (p1 : p2 : []) = return $ EBool (p1 == p2)
-prim "list" params = return $ EList params
 prim "count" ((EMap m) : _) = return . ENumber . toInteger . M.size $ m
 prim "count" (s : _) = return . ENumber . toInteger . length . seqElems $ s
 prim "trace" (flag : _) = setTraceFlag (isTruthy flag) >>= return . EBool
@@ -315,28 +349,30 @@ prim "lambda" (s : body) = do
                      [b] -> b
                      _ -> (EList (ESymbol "do": body))
       outerLocal <- getLocalEnv
-      return $ Fun $ Lambda "lambda" s doBody $ (\actuals -> do
+      return $ Fun { funName = Nothing, funLambda = Just $ Lambda { lambdaParams = s, lambdaBody = doBody },
+                     funType = funFunType, funFun = Just (\actuals -> do
         innerLocal <- getLocalEnv
         setLocalEnv outerLocal
         alright <- unifyState s $ EList actuals
         if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         val <- evalExpr doBody
         setLocalEnv innerLocal
-        return val)
+        return val) }
 -- TODO: the macro definition is identical to that of "lambda"!
 prim "macro" (s : body) = do
       let doBody = case body of
                      [b] -> b
                      _ -> (EList (ESymbol "do": body))
       outerLocal <- getLocalEnv
-      return $ Macro $ Lambda "macro" s doBody $ (\actuals -> do
+      return $ Fun { funType = macroFunType, funName = Nothing,
+                     funLambda = Just $ Lambda { lambdaParams = s, lambdaBody = doBody }, funFun = Just (\actuals -> do
         innerLocal <- getLocalEnv
         setLocalEnv outerLocal                
         alright <- unifyState s $ EList actuals
         if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
         expanded <- evalExpr doBody
         setLocalEnv innerLocal
-        return expanded)
+        return expanded) }
 prim "backquote" (s : _) = do
   backquote 1 s
 

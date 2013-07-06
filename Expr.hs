@@ -9,30 +9,44 @@ import qualified Data.Map as M
 import Data.Char
 
 type GCompFun m = [GExpr m] -> m (GExpr m)
-data Lambda m = Lambda { lambdaName :: String,
-                         lambdaParams :: GExpr m,
-                         lambdaBody :: GExpr m,
-                         lambdaFun :: GCompFun m }
+data Lambda m = Lambda { lambdaParams :: GExpr m,
+                         lambdaBody :: GExpr m }
+
+instance Eq (Lambda m) where
+  Lambda { lambdaParams = params1, lambdaBody = body1 } ==
+    Lambda { lambdaParams = params2, lambdaBody = body2 } =
+    params1 == params2 && body1 == body2
 
 instance Show (Lambda m) where
-  show (Lambda name params expr _) = name ++
-    if isTruthy params then ": " ++ show params ++ " --> " ++ show expr ++ ")" else ""
+  show (Lambda { lambdaParams = params, lambdaBody = body }) =
+    if isTruthy params then ": " ++ show params ++ " --> " ++ show body ++ ")" else ""
 
-data GExpr m where
-  EKeyword :: String -> (Maybe String) -> GExpr m
-  ESymbol :: String -> GExpr m
-  ENumber :: Integer -> GExpr m
-  EString :: String -> GExpr m
-  EChar :: Char -> GExpr m
-  EBool :: Bool -> GExpr m
-  ENil :: GExpr m
-  Fun :: Lambda m -> GExpr m
-  Macro :: Lambda m -> GExpr m
-  ESpecial :: String -> GCompFun m -> GExpr m
-  EList :: [GExpr m] -> GExpr m
-  EVector :: [GExpr m] -> GExpr m
-  ESet :: S.Set (GExpr m) -> GExpr m
-  EMap :: M.Map (GExpr m) (GExpr m) -> GExpr m
+-- a function can be evaluable during expansion, i.e., a macro, and can also pass parameters
+-- by name or value
+
+data FunType = FunType { funMacro :: Bool, funRuntime :: Bool, funByName :: Bool } deriving (Eq, Ord)
+
+instance Show FunType where
+  show (FunType { funMacro = True }) = "macro"
+  show (FunType { funByName = True }) = "special"
+  show _ = ""
+
+funFunType = FunType { funMacro = False, funRuntime = True, funByName = False }
+macroFunType = FunType { funMacro = True, funRuntime = True, funByName = True }
+specialFunType = FunType { funMacro = False, funRuntime = True, funByName = True }
+
+data GExpr m = EKeyword { keywordName :: String, keywordNS :: Maybe String } |
+               ESymbol String |
+               ENumber Integer |
+               EString String |
+               EChar Char |
+               EBool Bool |
+               ENil |
+               Fun { funType :: FunType, funName :: Maybe String, funLambda :: Maybe (Lambda m), funFun :: Maybe (GCompFun m) } |
+               EList [GExpr m] |
+               EVector [GExpr m] |
+               ESet (S.Set (GExpr m)) |
+               EMap (M.Map (GExpr m) (GExpr m))
 
 instance Show (GExpr m) where
   show (EKeyword s Nothing) = ":" ++ s
@@ -43,9 +57,7 @@ instance Show (GExpr m) where
   show (ENumber num) = show num
   show (EBool b) = if b then "true" else "false"
   show ENil = "nil"
-  show (Fun lambda@(Lambda {})) = "[fun]" ++ show lambda
-  show (Macro lambda@(Lambda {})) = show lambda
-  show (ESpecial s _) = "[special]" ++ s
+  show (Fun { funLambda = lambda, funName = name, funType = funType }) = show funType ++ "[" ++ (maybe "" id name) ++ "]" ++ (maybe "" show lambda)
   show (EMap m) = "{" ++ Str.join ", " (map (\(k,v) -> show k ++ " " ++ show v) $ M.assocs m) ++ "}"
   show e | isContainer e = leftDelim (seqType e) ++ (Str.join " " $ map show elems) ++ rightDelim (seqType e) where
     elems = seqElems e
@@ -58,8 +70,9 @@ instance Eq (GExpr m) where
   EString s1 == EString s2 = s1 == s2
   EBool b1 == EBool b2 = b1 == b2
   ENil == ENil = True
-  Fun (Lambda n1 p1 e1 _) == Fun (Lambda n2 p2 e2 _) = n1 == n2 && e1 == e2 && p1 == p2
-  ESpecial s1 _ == ESpecial s2 _ = s1 == s2
+  Fun { funType = funType1, funName = funName1, funLambda = funLambda1, funFun = funFun1 } ==
+    Fun { funType = funType2, funName = funName2, funLambda = funLambda2, funFun = funFun2 } =
+    funType1 == funType2 && funName1 == funName2 && funLambda1 == funLambda2
   seq1 == seq2 | isContainer seq1 && isContainer seq2 =
     seqType seq1 == seqType seq2 && seqElems seq1 == seqElems seq2
   _ == _ = False
@@ -171,7 +184,6 @@ exprType (ESymbol {}) = "symbol"
 exprType (EChar {}) = "char"
 exprType (EString {}) = "string"
 exprType (ENil {}) = "nil"
-exprType (ESpecial {}) = "special"
 exprType (EMap {}) = "map"
 exprType (EList {}) = "list"
 exprType (EVector {}) = "vector"
@@ -186,12 +198,18 @@ printShow x = show x
 flipNs (EKeyword ns (Just s)) = EKeyword s (Just ns)
 flipNs x = x
 
+isSpecialType :: FunType -> Bool
+isSpecialType funType = funByName funType && not (funMacro funType)
+
 isSpecial :: GExpr m -> Bool
-isSpecial (ESpecial _ _) = True
+isSpecial (Fun { funType = funType }) = isSpecialType funType
 isSpecial _ = False
 
+isMacroType :: FunType -> Bool
+isMacroType funType = funByName funType && funMacro funType
+
 isMacro :: GExpr m -> Bool
-isMacro (Macro _) = True
+isMacro (Fun { funType = funType }) = isMacroType funType
 isMacro _ = False
 
 -- string and char utils
