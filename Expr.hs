@@ -1,4 +1,3 @@
-{-# LANGUAGE GADTs, ExistentialQuantification, FlexibleContexts, Rank2Types, UndecidableInstances, GADTs #-}
 module Expr where
 
 import Control.Monad.Error
@@ -7,32 +6,30 @@ import qualified Data.String.Utils as Str
 import qualified Data.Set as S
 import qualified Data.Map as M
 import Data.Char
+import Data.Typeable
 
-type GCompFun m = [GExpr m] -> m (GExpr m)
-data Lambda m = Lambda { lambdaName :: String,
-                         lambdaParams :: GExpr m,
-                         lambdaBody :: GExpr m,
-                         lambdaFun :: GCompFun m }
+data Lambda = Lambda { lambdaName :: String,
+                       lambdaParams :: Expr,
+                         lambdaBody :: Expr }
 
-instance Show (Lambda m) where
+instance Show Lambda where
   show (Lambda name params expr _) = name ++
     if isTruthy params then ": " ++ show params ++ " --> " ++ show expr ++ ")" else ""
 
-data GExpr m where
-  EKeyword :: String -> (Maybe String) -> GExpr m
-  ESymbol :: String -> GExpr m
-  ENumber :: Integer -> GExpr m
-  EString :: String -> GExpr m
-  EChar :: Char -> GExpr m
-  EBool :: Bool -> GExpr m
-  ENil :: GExpr m
-  Fun :: Lambda m -> GExpr m
-  Macro :: Lambda m -> GExpr m
-  ESpecial :: String -> GCompFun m -> GExpr m
-  EList :: [GExpr m] -> GExpr m
-  EVector :: [GExpr m] -> GExpr m
-  ESet :: S.Set (GExpr m) -> GExpr m
-  EMap :: M.Map (GExpr m) (GExpr m) -> GExpr m
+data Expr =
+  EKeyword String (Maybe String) |
+  ESymbol String |
+  ENumber Integer |
+  EString String |
+  EChar Char |
+  EBool Bool |
+  ENil |
+  ELambda Lambda |
+  ESpecial String |
+  EList [Expr] |
+  EVector [GExpr m] |
+  ESet (S.Set (GExpr m)) |
+  EMap (M.Map (GExpr m) (GExpr m))
 
 instance Show (GExpr m) where
   show (EKeyword s Nothing) = ":" ++ s

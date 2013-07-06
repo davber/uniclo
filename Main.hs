@@ -1,3 +1,4 @@
+{-# LANGUAGE XQuasiQuotes #-}
 module Main where
 
 import Data.Either
