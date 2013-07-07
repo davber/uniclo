@@ -21,7 +21,6 @@
 (defmacro defn [f args & body] `(def ~f (fn ~args ~@body)))
 
 ;; function composition: comp, swap
-
 (defn comp [f g] (fn [x] (f (g x))))
 (defn comp2 [f g] (fn [x y] (f (g x y))))
 (defn swap [f] (fn [x y] (f y x)))

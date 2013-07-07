@@ -21,19 +21,25 @@ instance Show (Lambda m) where
   show (Lambda { lambdaParams = params, lambdaBody = body }) =
     if isTruthy params then ": " ++ show params ++ " --> " ++ show body ++ ")" else ""
 
--- a function can be evaluable during expansion, i.e., a macro, and can also pass parameters
--- by name or value
+-- there are various aspects of a function:
+-- 1. does it expand an expression, or does it evaluate regularly? The former is usually classified
+--    a macro in Lisp languages; if expanding, it will be invoked once during expansion phase, and
+--    if encountered during runtime, if will be invoked once whereafter evaluation proceeds with
+--    the expanded expression
+-- 2. does it use call by name or call by value?
+-- 3. can it be applied during compile/expansion time?
+-- 4. can it be applied during runtime?
 
-data FunType = FunType { funMacro :: Bool, funRuntime :: Bool, funByName :: Bool } deriving (Eq, Ord)
+data FunType = FunType { funExpand :: Bool, funByName :: Bool, funCompilePhase :: Bool, funRuntime :: Bool } deriving (Eq, Ord)
 
 instance Show FunType where
-  show (FunType { funMacro = True }) = "macro"
+  show (FunType { funExpand = True }) = "macro"
   show (FunType { funByName = True }) = "special"
   show _ = ""
 
-funFunType = FunType { funMacro = False, funRuntime = True, funByName = False }
-macroFunType = FunType { funMacro = True, funRuntime = True, funByName = True }
-specialFunType = FunType { funMacro = False, funRuntime = True, funByName = True }
+funFunType = FunType { funExpand = False, funRuntime = True, funCompilePhase = False, funByName = False }
+macroFunType = FunType { funExpand = True, funCompilePhase = True, funRuntime = True, funByName = True }
+specialFunType = FunType { funExpand = False, funCompilePhase = False, funRuntime = True, funByName = True }
 
 data GExpr m = EKeyword { keywordName :: String, keywordNS :: Maybe String } |
                ESymbol String |
@@ -199,14 +205,14 @@ flipNs (EKeyword ns (Just s)) = EKeyword s (Just ns)
 flipNs x = x
 
 isSpecialType :: FunType -> Bool
-isSpecialType funType = funByName funType && not (funMacro funType)
+isSpecialType funType = funByName funType && not (funExpand funType)
 
 isSpecial :: GExpr m -> Bool
 isSpecial (Fun { funType = funType }) = isSpecialType funType
 isSpecial _ = False
 
 isMacroType :: FunType -> Bool
-isMacroType funType = funByName funType && funMacro funType
+isMacroType funType = funByName funType && funExpand funType
 
 isMacro :: GExpr m -> Bool
 isMacro (Fun { funType = funType }) = isMacroType funType

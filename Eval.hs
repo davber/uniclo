@@ -58,7 +58,12 @@ expandProgram exprs = printTrace "*** Expanding program ***" >> mapM (\e -> expa
 readProgram :: String -> Comp [Expr]
 readProgram text = do
   printTrace "*** Parsing program ***"
-  either throwError (\expr -> printTrace "*** Reading program ***" >> shufflePrefixList expr >>= shuffleInfixList True) $ parseProgramText text
+  either throwError (\expr -> printTrace "*** Reading program ***" >>
+                              shufflePrefixList expr >>=
+                              (\es -> (printTrace $ "Shuffled prefix from " ++ show expr ++ " to " ++ show es) >> return es) >>=
+                              return >>= -- shuffleInfixList True >>=
+                              (\es2 -> (printTrace $ "Shuffled infix to " ++ show es2) >> return es2)) $
+                              parseProgramText text
 
 --
 -- Evaluator, yielding (and executing...) a computation
@@ -129,20 +134,22 @@ shufflePrefixList e@(first : rest) = do
   let e' =  if isPrefix && not (null shuffleR)
             then EList [first, head shuffleR] : tail shuffleR
             else shuffleF : shuffleR
-  if isPrefix then printTrace $ "Reader: " ++ show e ++ " ==> " ++ show e' else return ()
+  if isPrefix then printTrace $ "Reader (prefix): " ++ show e ++ " ==> " ++ show e' else return ()
   return e'
 shufflePrefixList [] = return []
 
 shuffleInfix :: Expr -> Comp Expr
 shuffleInfix (EList [ESymbol "def", sym, expr]) = do
-  expr' <- shufflePrefix expr
+  expr' <- shuffleInfix expr
   return . EList $ [ESymbol "def", sym, expr']
-shuffleInfix (EList es@[arg1, infixS, arg2]) = do
+shuffleInfix e@(EList es@[arg1, infixS, arg2]) = do
   isInfix <- isInfixSymbol infixS
   if isInfix then do
     a1 <- shuffleInfix arg1
     a2 <- shuffleInfix arg2
-    return . EList $ [infixS, a1, a2]
+    let e' = EList $ [infixS, a1, a2]
+    printTrace $ "Reader (infix): " ++ show e ++ " ==> " ++ show e'
+    return e'
   else
     liftM EList $ shuffleInfixList True es
 shuffleInfix e | isContainer e = do
@@ -153,11 +160,12 @@ shuffleInfix e = return e
 shuffleInfixList :: Bool -> [Expr] -> Comp [Expr]
 shuffleInfixList shouldShuffleFirst e@(f : e2@(infixS : s : rest)) = do
   isInfix <- isInfixSymbol infixS
-  printTrace $ "Got an infix symbol: " ++ show infixS
   arg1 <- if shouldShuffleFirst then shuffleInfix f else return f
   if isInfix then do
     arg2 <- shuffleInfix s
-    shuffleInfixList False $ EList [infixS, arg1, arg2] : rest
+    e' <- shuffleInfixList False $ EList [infixS, arg1, arg2] : rest
+    printTrace $ "Reader (infix): " ++ show e ++ " ==> " ++ show e'
+    return e'
   else do
     restE <- shuffleInfixList True e2
     return $ arg1 : restE
@@ -267,6 +275,7 @@ bootstrapState = do
 primFuns = [
   "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
   "cons", "first", "type", "seq?", "seqable?", "container?", "seq", "conj",
+  "get", "nth",
   "+", "-", "*", "div", "mod", "<", "=", "count",
   "name", "str",
   "trace", "fail"]
@@ -312,6 +321,10 @@ prim "seq" (s : _) = let elems = seqElems s in
 -- conj can add many elements, where maps expects sequences of key and value
 -- for each added element
 prim "conj" (s : adding) = return $ foldl conj s adding
+prim "nth" (s : (ENumber n) : _) = return $ if length elems > ind then elems !! ind else ENil where
+  ind = fromInteger n
+  elems = seqElems s
+prim "get" ((EMap m) : key : _) = return $ maybe ENil id $ M.lookup key m
 prim "+" s = numHandler (foldl (+) 0) s
 prim "-" s = numHandler (\(n : ns) -> if ns==[] then - n else (foldl (-) n ns)) s
 prim "*" s = numHandler (foldl (*) 1) s
