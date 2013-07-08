@@ -60,10 +60,8 @@ readProgram text = do
   printTrace "*** Parsing program ***"
   either throwError (\expr -> printTrace "*** Reading program ***" >>
                               shufflePrefixList expr >>=
-                              (\es -> (printTrace $ "Shuffled prefix from " ++ show expr ++ " to " ++ show es) >> return es) >>=
-                              return >>= -- shuffleInfixList True >>=
-                              (\es2 -> (printTrace $ "Shuffled infix to " ++ show es2) >> return es2)) $
-                              parseProgramText text
+                              shuffleInfixList True) $
+                    parseProgramText text
 
 --
 -- Evaluator, yielding (and executing...) a computation
@@ -73,14 +71,20 @@ evalProgram :: [Expr] -> Comp [Expr]
 evalProgram exprs = printTrace "*** Evaluating program ***" >> mapM evalExpr exprs
 
 evalExpr :: Expr -> Comp (Expr)
-evalExpr e@(EKeyword _ _) = return e
-evalExpr e@(EChar _) = return e
+evalExpr e@(EKeyword {}) = return e
+evalExpr e@(EChar {}) = return e
 evalExpr (ESymbol sym) = getVar sym >>=
   maybe (fail $ "Could not find variable " ++ sym) return
 evalExpr e@(EList (f : params)) = do
   fun <- evalExpr f
-  res <- apply fun params
-  printTrace $ "Reduction: " ++ show e ++ " ==> " ++ show res
+  res <- case fun of
+    Fun { } -> apply fun params
+    _ -> fail $ "Cannot apply function " ++ show fun
+  -- If the function was an expanding one, we need to here
+  -- (re-)evaluate the yielded expression here.
+  -- NOTE: this only makes sense during runtime.
+  res' <- (if funExpand (funType fun) then evalExpr else return) res
+  printTrace $ "Reduction: " ++ show e ++ " ==> " ++ show res'
   return res
 evalExpr e@(ENumber {}) = return e
 evalExpr e@(EString {}) = return e
@@ -101,6 +105,11 @@ num (ENumber numb) = return numb
 num e = throwError $ show e ++ " is not a number"
 
 apply :: Expr -> [Expr] -> Comp (Expr)
+--
+-- When applying a function, we check whether it is call-by-name, in which
+-- case we avoid evaluating parameters.
+-- NOTE: we assume this can be used during either expansion or runtime phase
+--
 apply (Fun { funFun = (Just f), funType = fType }) params = mapM (if funByName fType then return else evalExpr) params >>= f
 apply other args = throwError $ "Not a proper function application: " ++ show (EList (other : args))
 
@@ -160,6 +169,7 @@ shuffleInfix e = return e
 shuffleInfixList :: Bool -> [Expr] -> Comp [Expr]
 shuffleInfixList shouldShuffleFirst e@(f : e2@(infixS : s : rest)) = do
   isInfix <- isInfixSymbol infixS
+  printTrace $ "Shuffle prefix: checked whether " ++ show infixS ++ " is infix: " ++ show isInfix
   arg1 <- if shouldShuffleFirst then shuffleInfix f else return f
   if isInfix then do
     arg2 <- shuffleInfix s
@@ -177,14 +187,12 @@ shuffleInfixList shouldShuffleFirst (f : r) = do
   
 -- expand top-level form one step, if possible
 expandMacro1 :: Expr -> Comp (Maybe Expr)
-expandMacro1 e@(EList ((Fun { funName = n, funFun = (Just f), funType = fType }) : params)) | isMacroType fType = do
-  val <- f params
-  printTrace $ "Inside macroexpand-1: " ++ show e ++ " ==> " ++ show val
-  return . Just $ val
 expandMacro1 e@(EList (f : params)) = do
-  s <- get
-  (fval, _) <- lift . lift . runComp (expandMacro f >>= evalExpr) $ s
-  either (\err -> printTrace ("warning when trying to expand form " ++ show e ++ ": " ++ show err) >> return Nothing) (\val -> if isMacro val then expandMacro1 (EList (val : params)) else return Nothing) fval
+  res <- lift $ runErrorT $ evalExpr f
+  e' <- case res of
+          Right (fun@(Fun { funType = FunType { funCompilePhase = True }})) -> apply fun params
+          _ -> return e
+  if e' /= e then printTrace ("expandmacro-1: " ++ show e ++ " ==> " ++ show e') >> return (Just e') else return Nothing
 expandMacro1 e = return Nothing
 
 -- apply macroexpand-1 repeatedly at top level till it yields no new value
