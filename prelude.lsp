@@ -34,9 +34,15 @@
 (defn comp2 [f g] (fn [x y] (f (g x y))))
 (defn swap [f] (fn [x y] (f y x)))
 
-;; some primitive boolean operations: not, boolean
+;; some primitive boolean operations: not, boolean, and, or
 (defn not [x] (if x false true))
 (def boolean (comp not not))
+(defmacro or [& args]
+  (if (empty? args) 'false
+    `(if ~(first args) ~(first args) (or ~@(next args)))))
+(defmacro and [& args]
+  (if (empty? args) 'true
+    `(if ~(first args) (and ~@(next args)) 'false)))
 
 ;; sequence operations: into, empty?, map
 
@@ -45,8 +51,6 @@
 (defn map [f coll] (if (empty? coll) nil (cons (f (first coll)) (map f (rest coll)))))
 (def second (comp first rest))
 (def next (comp seq rest))
-(defn nth [comp n]
-  (if (= n 0) (first comp) (nth (rest comp) (- n 1))))
 
 ;; integrating with runtime/environment: load
 
@@ -88,6 +92,9 @@
 (def >= (swap <=))
 (def not= (comp2 not =))
 
+;; some sequence operators
 
-
-  
+(defn append (s1 s2)
+  (match s1
+    [] s2
+    [f & r] (cons f (append r s2))))

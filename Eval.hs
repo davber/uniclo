@@ -6,6 +6,7 @@ import Control.Monad.State
 import Control.Exception
 import qualified Data.String.Utils as Str
 import qualified Data.Map as M
+import Data.Char
 
 import Expr
 import Common
@@ -102,7 +103,14 @@ evalStr s = readProgram s >>= expandProgram >>= evalProgram
 
 num :: Expr -> Comp Integer
 num (ENumber numb) = return numb
-num e = throwError $ show e ++ " is not a number"
+num (EChar c) = return . toInteger . ord $ c
+num e = fail $ show e ++ " is not a number"
+
+toChar :: Expr -> Comp Expr
+toChar (EString (c:_)) = return . EChar $ c
+toChar e@(EChar {}) = return e
+toChar (ENumber num) = return . EChar . chr . fromInteger $ num
+toChar e = fail $ "Cannot convert to char: " ++ show e
 
 apply :: Expr -> [Expr] -> Comp (Expr)
 --
@@ -286,7 +294,7 @@ primFuns = [
   "cons", "first", "type", "seq?", "seqable?", "container?", "seq", "conj",
   "get", "nth",
   "+", "-", "*", "div", "mod", "<", "=", "count",
-  "name", "str",
+  "name", "str", "char",
   "trace", "fail"]
 primSpecials = ["def", "do", "if", "dump", "quote", "unify", "fun", "backquote"]
 
@@ -321,6 +329,7 @@ prim "type" (f : _) = return . EString . exprType $ f
 prim "name" (n : _) | isNamed n = return . EString . exprName $ n
                     | True = throwError $ "Cannot get name of " ++ show n
 prim "str" args = return . EString . Str.join "" . map exprStr $ args
+prim "char" (e : _) = toChar e
 prim "seq?" (s : _) = return . EBool $ isSeq s
 prim "seqable?" (s : _) = return . EBool $ isSeqable s
 prim "container?" (s : _) = return . EBool $ isContainer s
