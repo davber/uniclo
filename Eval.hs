@@ -350,54 +350,43 @@ prim "fail" args = throwError $ Str.join " " $ map show args
 --
 -- TODO: allow def with zero or more than 1 value arguments
 prim "def" [ESymbol var, value] = do
-     evaled <- evalExpr value
-     setGlobal (var, evaled)
-     return evaled
+  evaled <- evalExpr value
+  setGlobal (var, evaled)
+  return evaled
 prim "do" params = if null params then return ENil else liftM last . mapM evalExpr $ params
 prim "if" (condPart : thenPart : elsePart : []) = do
-     cond <- evalExpr condPart
-     evalExpr $ if isTruthy cond then thenPart else elsePart
+  cond <- evalExpr condPart
+  evalExpr $ if isTruthy cond then thenPart else elsePart
 prim "dump" _ = do 
-      liftIO $ putStrLn "DUMP: "
-      liftIO $ putStrLn "ENV = "
-      dump
-      return ENil
+  liftIO $ putStrLn "DUMP: "
+  liftIO $ putStrLn "ENV = "
+  dump
+  return ENil
 prim "quote" (param : _) = do
-      return $ param
+  return $ param
 prim "unify" (formal : actual : []) = unifyState formal actual >>= return . EBool
-prim "lambda" (s : body) = do
-      let doBody = case body of
-                     [b] -> b
-                     _ -> (EList (ESymbol "do": body))
-      outerLocal <- getLocalEnv
-      return $ Fun { funName = Nothing, funLambda = Just $ Lambda { lambdaParams = s, lambdaBody = doBody },
-                     funType = funFunType, funFun = Just (\actuals -> do
-        innerLocal <- getLocalEnv
-        setLocalEnv outerLocal
-        alright <- unifyState s $ EList actuals
-        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
-        val <- evalExpr doBody
-        setLocalEnv innerLocal
-        return val) }
--- TODO: the macro definition is identical to that of "lambda"!
-prim "macro" (s : body) = do
-      let doBody = case body of
-                     [b] -> b
-                     _ -> (EList (ESymbol "do": body))
-      outerLocal <- getLocalEnv
-      return $ Fun { funType = macroFunType, funName = Nothing,
-                     funLambda = Just $ Lambda { lambdaParams = s, lambdaBody = doBody }, funFun = Just (\actuals -> do
-        innerLocal <- getLocalEnv
-        setLocalEnv outerLocal                
-        alright <- unifyState s $ EList actuals
-        if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
-        expanded <- evalExpr doBody
-        setLocalEnv innerLocal
-        return expanded) }
+prim "lambda" params = makeLambda Nothing params funFunType
+prim "macro" params = makeLambda Nothing params macroFunType
 prim "backquote" (s : _) = do
   backquote 1 s
 
 prim fun args = throwError $ "Got a strange call of " ++ show fun ++ " on " ++ show args
+
+makeLambda :: Maybe String -> [Expr] -> FunType -> Comp Expr
+makeLambda name (s : body) fType = do
+  let doBody = case body of
+                [b] -> b
+                _ -> (EList (ESymbol "do": body))
+  outerLocal <- getLocalEnv
+  return $ Fun { funName = name, funLambda = Just $ Lambda { lambdaParams = s, lambdaBody = doBody },
+                 funType = fType, funFun = Just (\actuals -> do
+  innerLocal <- getLocalEnv
+  setLocalEnv outerLocal
+  alright <- unifyState s $ EList actuals
+  if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
+  val <- evalExpr doBody
+  setLocalEnv innerLocal
+  return val) }
 
 numHandler :: ([Integer] -> Integer) -> CompFun
 numHandler f params = do
