@@ -83,7 +83,7 @@ evalExpr e@(EList (f : params)) = do
   -- If the function was an expanding one, we need to here
   -- (re-)evaluate the yielded expression here.
   -- NOTE: this only makes sense during runtime.
-  res' <- (if funExpand (funType fun) then evalExpr else return) res
+  res' <- (if funExpressive (funType fun) then evalExpr else return) res
   printTrace $ "Reduction: " ++ show e ++ " ==> " ++ show res'
   return res
 evalExpr e@(ENumber {}) = return e
@@ -110,7 +110,9 @@ apply :: Expr -> [Expr] -> Comp (Expr)
 -- case we avoid evaluating parameters.
 -- NOTE: we assume this can be used during either expansion or runtime phase
 --
-apply (Fun { funFun = (Just f), funType = fType }) params = mapM (if funByName fType then return else evalExpr) params >>= f
+apply (Fun { funFun = (Just f), funType = fType }) params =
+  -- we only evaluate parameters for call-by-value functions
+  mapM (if funByName fType then return else evalExpr) params >>= f
 apply other args = throwError $ "Not a proper function application: " ++ show (EList (other : args))
 
 --
@@ -169,7 +171,6 @@ shuffleInfix e = return e
 shuffleInfixList :: Bool -> [Expr] -> Comp [Expr]
 shuffleInfixList shouldShuffleFirst e@(f : e2@(infixS : s : rest)) = do
   isInfix <- isInfixSymbol infixS
-  printTrace $ "Shuffle prefix: checked whether " ++ show infixS ++ " is infix: " ++ show isInfix
   arg1 <- if shouldShuffleFirst then shuffleInfix f else return f
   if isInfix then do
     arg2 <- shuffleInfix s
@@ -287,7 +288,8 @@ primFuns = [
   "+", "-", "*", "div", "mod", "<", "=", "count",
   "name", "str",
   "trace", "fail"]
-primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro", "backquote"]
+primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro",
+                "inline", "backquote"]
 
 makePrimLambda :: String -> Comp ()
 makePrimLambda name = setGlobal $ (name, Fun { funLambda = Nothing, funName = Just name, funFun = Just $ prim name, funType = funFunType })
@@ -367,6 +369,7 @@ prim "quote" (param : _) = do
 prim "unify" (formal : actual : []) = unifyState formal actual >>= return . EBool
 prim "lambda" params = makeLambda Nothing params funFunType
 prim "macro" params = makeLambda Nothing params macroFunType
+prim "inline" params = makeLambda Nothing params inlineFunType
 prim "backquote" (s : _) = do
   backquote 1 s
 
@@ -380,18 +383,29 @@ makeLambda name (s : body) fType = do
   outerLocal <- getLocalEnv
   return $ Fun { funName = name, funLambda = Just $ Lambda { lambdaParams = s, lambdaBody = doBody },
                  funType = fType, funFun = Just (\actuals -> do
-  innerLocal <- getLocalEnv
-  setLocalEnv outerLocal
-  alright <- unifyState s $ EList actuals
-  if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
-  val <- evalExpr doBody
-  setLocalEnv innerLocal
-  return val) }
+    innerLocal <- getLocalEnv
+    setLocalEnv outerLocal
+    alright <- unifyState s $ EList actuals
+    if alright then return ENil else (throwError $ "Could not bind formal parameters " ++ show s ++ " with actual parameters " ++ show (EList actuals) ++ " for function with body " ++ show body)
+    val <- (if funReduce fType then substitute else evalExpr) doBody
+    setLocalEnv innerLocal
+    return val) }
 
 numHandler :: ([Integer] -> Integer) -> CompFun
 numHandler f params = do
   nums <- mapM num params
   return $ ENumber $ f nums
+
+-- Substitute all variables, but keep all other expressions intact
+substitute :: Expr -> Comp Expr
+-- TODO: we use literals for the quoting prefixes; handle it properly!
+substitute e@(EList (ESymbol name : _)) | elem name ["quote", "'"] = return e
+substitute e | isContainer e =
+  mapM substitute (seqElems e) >>=
+  return . makeSeq (seqType e)
+substitute e@(ESymbol name) =
+  getVar name >>= return . maybe e id
+substitute e = return e
 
 -- Some utilities
 

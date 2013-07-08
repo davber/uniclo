@@ -19,6 +19,7 @@
 (def fn lambda)
 (def defmacro (macro [name args & body] `(def ~name (macro ~args ~@body))))
 (defmacro defn [f args & body] `(def ~f (fn ~args ~@body)))
+(defmacro definline [f args & body] `(def ~f (inline ~args ~@body)))
 
 ;; function composition: comp, swap
 (defn comp [f g] (fn [x] (f (g x))))

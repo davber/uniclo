@@ -21,25 +21,28 @@ instance Show (Lambda m) where
   show (Lambda { lambdaParams = params, lambdaBody = body }) =
     if isTruthy params then ": " ++ show params ++ " --> " ++ show body ++ ")" else ""
 
--- there are various aspects of a function:
--- 1. does it expand an expression, or does it evaluate regularly? The former is usually classified
---    a macro in Lisp languages; if expanding, it will be invoked once during expansion phase, and
---    if encountered during runtime, if will be invoked once whereafter evaluation proceeds with
---    the expanded expression
--- 2. does it use call by name or call by value?
--- 3. can it be applied during compile/expansion time?
--- 4. can it be applied during runtime?
+data FunType = FunType {
+  funExpressive :: Bool, -- does the body generate an expression?
+  funByName :: Bool, -- should the parameters not be evaluated before passed?
+  funCompilePhase :: Bool, -- can it be applied during compile-time?
+  funRuntime :: Bool, -- can it be applied during runtime?
+  funReduce :: Bool, -- is the application merely a one step replacment by RHS?
+   funTypeName :: String } deriving (Eq, Ord)
 
-data FunType = FunType { funExpand :: Bool, funByName :: Bool, funCompilePhase :: Bool, funRuntime :: Bool } deriving (Eq, Ord)
+-- NOTE:
+--   - funExpressive will actually lead to a separate evaluation
+--     step after expansion, when used during runtime
+--   - a function can be both funExpressive and funExpand, which means
+--     that the expansion is merely the expanded body; in fact, a
+--     a funReduce function should often be funExpressive
 
 instance Show FunType where
-  show (FunType { funExpand = True }) = "macro"
-  show (FunType { funByName = True }) = "special"
-  show _ = ""
+  show (FunType { funTypeName = name }) = name
 
-funFunType = FunType { funExpand = False, funRuntime = True, funCompilePhase = False, funByName = False }
-macroFunType = FunType { funExpand = True, funCompilePhase = True, funRuntime = True, funByName = True }
-specialFunType = FunType { funExpand = False, funCompilePhase = False, funRuntime = True, funByName = True }
+funFunType = FunType { funExpressive = False, funRuntime = True, funCompilePhase = False, funByName = False, funReduce = False, funTypeName = "fun" }
+macroFunType = FunType { funExpressive = True, funCompilePhase = True, funRuntime = True, funByName = True, funReduce = False, funTypeName = "macro" }
+specialFunType = FunType { funExpressive = False, funCompilePhase = False, funRuntime = True, funByName = True, funReduce = False, funTypeName = "special" }
+inlineFunType = FunType { funExpressive = True, funCompilePhase = True, funRuntime = True, funByName = False, funReduce = True, funTypeName = "inline" }
 
 data GExpr m = EKeyword { keywordName :: String, keywordNS :: Maybe String } |
                ESymbol String |
@@ -205,14 +208,14 @@ flipNs (EKeyword ns (Just s)) = EKeyword s (Just ns)
 flipNs x = x
 
 isSpecialType :: FunType -> Bool
-isSpecialType funType = funByName funType && not (funExpand funType)
+isSpecialType funType = funByName funType && not (funExpressive funType)
 
 isSpecial :: GExpr m -> Bool
 isSpecial (Fun { funType = funType }) = isSpecialType funType
 isSpecial _ = False
 
 isMacroType :: FunType -> Bool
-isMacroType funType = funCompilePhase funType && funByName funType && funExpand funType
+isMacroType funType = funCompilePhase funType && funByName funType && funExpressive funType
 
 isMacro :: GExpr m -> Bool
 isMacro (Fun { funType = funType }) = isMacroType funType
