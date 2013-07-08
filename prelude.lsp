@@ -4,17 +4,25 @@
 ;; symbols that are infix
 (def *infix-symbols* [(quote +)])
 
+;; some meta functions: ` and '
+(def ` backquote)
+(def ' quote)
+(def ~ (fun [] (s) (fail "Tried to apply ~ as a function on " s)))
+(def ~@ (fun [] (s) (fail "Tried to apply ~@ as a function on " s)))
+
+;; lambda, macro and inline
+(def macro (fun [:expressive :call-by-name :compile-time :macro] [args & body]
+  `(fun [:expressive :call-by-name :macro] ~args ~@body)))
+(def lambda (macro [args & body]
+  `(fun [:fun] ~args ~@body)))
+(def inline (macro [args & body]
+  `(fun [:compile-time :runtime :reduce :expressive] ~args ~@body)))
+
 ;; Some trivial functions: identity
 (def identity (lambda (x) x))
 (def list (lambda x x))
 
-;; some meta functions: ` and '
-(def ` backquote)
-(def ' quote)
-(def ~ (lambda (s) (fail "Tried to apply ~ as a function on " s)))
-(def ~@ (lambda (s) (fail "Tried to apply ~@ as a function on " s)))
-
-;; defmacro, defn, fn
+;; defmacro, defn, definline, defmacro, fn
 
 (def fn lambda)
 (def defmacro (macro [name args & body] `(def ~name (macro ~args ~@body))))

@@ -216,7 +216,6 @@ isSpecial _ = False
 
 isMacroType :: FunType -> Bool
 isMacroType funType = funCompilePhase funType && funByName funType && funExpressive funType
-
 isMacro :: GExpr m -> Bool
 isMacro (Fun { funType = funType }) = isMacroType funType
 isMacro _ = False

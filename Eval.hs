@@ -85,7 +85,7 @@ evalExpr e@(EList (f : params)) = do
   -- NOTE: this only makes sense during runtime.
   res' <- (if funExpressive (funType fun) then evalExpr else return) res
   printTrace $ "Reduction: " ++ show e ++ " ==> " ++ show res'
-  return res
+  return res'
 evalExpr e@(ENumber {}) = return e
 evalExpr e@(EString {}) = return e
 evalExpr e@(Fun {}) = return e
@@ -288,8 +288,7 @@ primFuns = [
   "+", "-", "*", "div", "mod", "<", "=", "count",
   "name", "str",
   "trace", "fail"]
-primSpecials = ["def", "do", "if", "dump", "quote", "unify", "lambda", "macro",
-                "inline", "backquote"]
+primSpecials = ["def", "do", "if", "dump", "quote", "unify", "fun", "backquote"]
 
 makePrimLambda :: String -> Comp ()
 makePrimLambda name = setGlobal $ (name, Fun { funLambda = Nothing, funName = Just name, funFun = Just $ prim name, funType = funFunType })
@@ -367,9 +366,7 @@ prim "dump" _ = do
 prim "quote" (param : _) = do
   return $ param
 prim "unify" (formal : actual : []) = unifyState formal actual >>= return . EBool
-prim "lambda" params = makeLambda Nothing params funFunType
-prim "macro" params = makeLambda Nothing params macroFunType
-prim "inline" params = makeLambda Nothing params inlineFunType
+prim "fun" (funSpec : params) = makeLambda Nothing params $ createSpecFunType (seqElems funSpec)
 prim "backquote" (s : _) = do
   backquote 1 s
 
@@ -406,6 +403,22 @@ substitute e | isContainer e =
 substitute e@(ESymbol name) =
   getVar name >>= return . maybe e id
 substitute e = return e
+
+defaultFunType = funFunType                           
+
+createSpecFunType :: [Expr] -> FunType
+createSpecFunType [] = defaultFunType
+createSpecFunType ((EKeyword name Nothing) : rest) =
+  let funType = createSpecFunType rest in
+  case name of
+    "call-by-name" -> funType { funByName = True }
+    "expressive" -> funType { funExpressive = True }
+    "reduce" -> funType { funReduce = True }
+    "compile-time" -> funType { funCompilePhase = True }
+    "runtime" -> funType { funRuntime = True }
+    -- TODO: we just assume that any other keyword names the kind of function
+    other -> funType { funTypeName = other }
+createSpecFunType (_ : rest) = createSpecFunType rest
 
 -- Some utilities
 
