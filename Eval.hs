@@ -276,7 +276,7 @@ backquoteList _ [] = return []
 bootstrap :: Comp ()
 bootstrap = do
   put . CompState $ S.emptyState
-  setTraceFlag False
+  setTracePat Nothing
   mapM_ (makePrimFun funFunType) primFuns
   mapM_ (makePrimFun specialFunType) primSpecials
   mapM_ setGlobal [("nil", ENil), ("false", EBool False), ("true", EBool True)]
@@ -362,7 +362,7 @@ prim "<" (p1 : p2 : []) = return $ EBool (p1 < p2)
 prim "=" (p1 : p2 : []) = return $ EBool (p1 == p2)
 prim "count" ((EMap m) : _) = return . ENumber . toInteger . M.size $ m
 prim "count" (s : _) = return . ENumber . toInteger . length . seqElems $ s
-prim "trace" (flag : _) = setTraceFlag (isTruthy flag) >>= return . EBool
+prim "trace" (pat : _) = setTracePat (if isTruthy pat then Just . exprStr $ pat else Nothing) >>= return . maybe ENil EString
 prim "fail" args = throwError $ Str.join " " $ map show args
 prim "exit" _ = fail "programmatic exit"
 prim "unify" (formal : actual : []) = unifyState formal actual >>= return . EBool

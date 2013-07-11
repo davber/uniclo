@@ -40,9 +40,9 @@ replEval env parsed = do
 preludeEnv :: IO CompState
 preludeEnv = do
   (_, st) <- runComp (bootstrap >>
-                      setTraceFlag True >>
+                      setTracePat (Just ".*") >>
                       evalStr "(eval* (read* (slurp \"prelude.lsp\")))" >>
-                      setTraceFlag False) . CompState $ S.emptyState
+                      setTracePat Nothing) . CompState $ S.emptyState
   return st
 
 testParseList :: String -> [Expr]

@@ -12,7 +12,7 @@ type Env m = Map.Map String (GExpr m)
 
 data CompPhase = PhaseRead | PhaseExpand | PhaseInterpret | PhaseCompile { compileTarget :: String, compileOutput :: String }
 
-data CompState m = CompState { compLocalEnv :: Env m, compGlobalEnv :: Env m, compTraceFlag :: Bool, compPhase :: CompPhase, compLocalStash :: BindingList m }
+data CompState m = CompState { compLocalEnv :: Env m, compGlobalEnv :: Env m, compTracePat :: Maybe String, compPhase :: CompPhase, compLocalStash :: BindingList m }
 
 getGlobalVar :: String -> CompState m -> Maybe (GExpr m)
 getGlobalVar name state = Map.lookup name $ compGlobalEnv state
@@ -32,10 +32,10 @@ getLocalBindings = Map.assocs . compLocalEnv
 getGlobalBindings :: CompState m -> BindingList m
 getGlobalBindings = Map.assocs . compGlobalEnv
 
-getTrace :: CompState m -> Bool
-getTrace = compTraceFlag
-setTrace :: Bool -> CompState m -> CompState m
-setTrace flag s = s { compTraceFlag = flag }
+getTrace :: CompState m -> Maybe String
+getTrace = compTracePat
+setTrace :: Maybe String -> CompState m -> CompState m
+setTrace pat s = s { compTracePat = pat }
 
 getCompPhase :: CompState m -> CompPhase
 getCompPhase s = compPhase s
@@ -43,6 +43,6 @@ setCompPhase :: CompPhase -> CompState m -> CompState m
 setCompPhase phase s = s { compPhase = phase }
 
 emptyState :: CompState m
-emptyState = CompState { compLocalEnv = emptyEnv, compGlobalEnv = emptyEnv, compTraceFlag = False, compPhase = PhaseInterpret, compLocalStash = [] }
+emptyState = CompState { compLocalEnv = emptyEnv, compGlobalEnv = emptyEnv, compTracePat = Nothing, compPhase = PhaseInterpret, compLocalStash = [] }
 emptyEnv :: Env m
 emptyEnv = Map.empty

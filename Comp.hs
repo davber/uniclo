@@ -4,6 +4,8 @@ import qualified Data.Map as M
 import Data.List((!!))
 import Control.Monad.State
 import Control.Monad.Error
+import Text.Regex.Base
+import Text.Regex.TDFA
 
 import Common
 import qualified Expr
@@ -108,25 +110,27 @@ resetLocal = do
   s <- get
   put . CompState $ (runCompState s) { S.compLocalEnv = S.emptyEnv }
 
-setTraceFlag :: Bool -> Comp Bool
-setTraceFlag flag = do
+setTracePat :: Maybe String -> Comp (Maybe String)
+setTracePat pat = do
   s <- get
-  let oldFlag = S.compTraceFlag . runCompState $ s
-  let s' = (runCompState s) { S.compTraceFlag = flag }
+  let oldPat = S.compTracePat . runCompState $ s
+  let s' = (runCompState s) { S.compTracePat = pat }
   put . CompState $ s'
-  return oldFlag
-getTraceFlag :: Comp Bool
-getTraceFlag = get >>= return . S.compTraceFlag . runCompState
+  return oldPat
+getTracePat :: Comp (Maybe String)
+getTracePat = get >>= return . S.compTracePat . runCompState
 printTrace :: String -> Comp ()
-printTrace text = do
-  flag <- getTraceFlag
-  if flag then liftIO $ putStrLn $ "TRACE: " ++ text else return ()
+printTrace text =
+  getTracePat >>=
+  maybe (return ()) (\str -> if null . getAllTextMatches $ (text =~ str :: AllTextMatches [] String)
+                             then return ()
+                             else liftIO . putStrLn $ "TRACE: " ++ text)
 compShow :: Comp String
 compShow = do
   -- NOTE: need to deconstruct the type to get to the ExprM context
   locals <- getLocalBindings
   globals <- getGlobalBindings
-  trace <- getTraceFlag
+  trace <- getTracePat
   stash <- getStash
   return $ "Tracing: " ++ show trace ++ "\nLocal: " ++
            show locals ++ "\nGlobal: " ++ show globals ++
