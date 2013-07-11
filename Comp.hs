@@ -71,12 +71,43 @@ addLocalBindings :: BindingList -> Comp ()
 addLocalBindings bindings = do
   s <- get
   let newLocals = foldl (\m (k, v) -> M.insert k v m)  (S.compLocalEnv . runCompState $ s) bindings
+  printTrace $ "Add local bindings: " ++ show newLocals
   put . CompState $ (runCompState s) { S.compLocalEnv = newLocals }
 addGlobalBindings :: BindingList -> Comp ()
 addGlobalBindings bindings = do
   s <- get
   let newGlobals = foldl (\m (k, v) -> M.insert k v m) (S.compGlobalEnv . runCompState $ s) bindings
   put . CompState $ (runCompState s) { S.compGlobalEnv = newGlobals }
+
+stashLocal :: Binding -> Comp ()
+stashLocal b = do
+  s <- get
+  let oldStash = S.compLocalStash . runCompState $ s
+  let s' = (runCompState s) { S.compLocalStash = (b : oldStash) }
+  put . CompState $ s'
+
+getStash :: Comp BindingList
+getStash =
+  get >>= return . S.compLocalStash . runCompState
+
+importStash :: Comp BindingList
+importStash = do
+  s <- get
+  let stash = S.compLocalStash . runCompState $ s
+  resetStash
+  addLocalBindings stash
+  return stash
+
+resetStash :: Comp ()
+resetStash = do
+  s <- get
+  put . CompState $ (runCompState s) { S.compLocalStash = [] }
+
+resetLocal :: Comp ()
+resetLocal = do
+  s <- get
+  put . CompState $ (runCompState s) { S.compLocalEnv = S.emptyEnv }
+
 setTraceFlag :: Bool -> Comp Bool
 setTraceFlag flag = do
   s <- get
@@ -91,15 +122,17 @@ printTrace text = do
   flag <- getTraceFlag
   if flag then liftIO $ putStrLn $ "TRACE: " ++ text else return ()
 compShow :: Comp String
-dump :: Comp ()
-dump = compShow >>= liftIO . print
 compShow = do
   -- NOTE: need to deconstruct the type to get to the ExprM context
   locals <- getLocalBindings
   globals <- getGlobalBindings
   trace <- getTraceFlag
+  stash <- getStash
   return $ "Tracing: " ++ show trace ++ "\nLocal: " ++
-           show locals ++ "\nGlobal: " ++ show globals
+           show locals ++ "\nGlobal: " ++ show globals ++
+           "\nStash: " ++ show stash
+dump :: Comp ()
+dump = compShow >>= liftIO . print
 
 type CompFun = [Expr] -> Comp Expr
 

@@ -10,9 +10,9 @@ type BindingList m = [Binding m]
 
 type Env m = Map.Map String (GExpr m)
 
-data CompPhase = PhaseRead | PhaseExpand | PhaseRuntime
+data CompPhase = PhaseRead | PhaseExpand | PhaseInterpret | PhaseCompile { compileTarget :: String, compileOutput :: String }
 
-data CompState m = CompState { compLocalEnv :: Env m, compGlobalEnv :: Env m, compTraceFlag :: Bool, compPhase :: CompPhase }
+data CompState m = CompState { compLocalEnv :: Env m, compGlobalEnv :: Env m, compTraceFlag :: Bool, compPhase :: CompPhase, compLocalStash :: BindingList m }
 
 getGlobalVar :: String -> CompState m -> Maybe (GExpr m)
 getGlobalVar name state = Map.lookup name $ compGlobalEnv state
@@ -43,6 +43,6 @@ setCompPhase :: CompPhase -> CompState m -> CompState m
 setCompPhase phase s = s { compPhase = phase }
 
 emptyState :: CompState m
-emptyState = CompState { compLocalEnv = emptyEnv, compGlobalEnv = emptyEnv, compTraceFlag = False, compPhase = PhaseRuntime }
+emptyState = CompState { compLocalEnv = emptyEnv, compGlobalEnv = emptyEnv, compTraceFlag = False, compPhase = PhaseInterpret, compLocalStash = [] }
 emptyEnv :: Env m
 emptyEnv = Map.empty

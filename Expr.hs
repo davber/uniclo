@@ -37,7 +37,7 @@ data FunType = FunType {
 --     a funReduce function should often be funExpressive
 
 instance Show FunType where
-  show (FunType { funTypeName = name }) = name
+   show (FunType { funTypeName = name }) = name
 
 funFunType = FunType { funExpressive = False, funRuntime = True, funCompilePhase = False, funByName = False, funReduce = False, funTypeName = "fun" }
 macroFunType = FunType { funExpressive = True, funCompilePhase = True, funRuntime = True, funByName = True, funReduce = False, funTypeName = "macro" }
@@ -125,6 +125,7 @@ isSeqable :: GExpr m -> Bool
 isSeqable e | isSeq e = True
 isSeqable (EString _) = True
 isSeqable (EMap _) = True
+isSeqable ENil = True
 isSeqable _ = False
 
 -- can expression contain sub expressions?
@@ -255,11 +256,17 @@ name :: GExpr m -> Maybe String
 name (ESymbol s) = Just s
 name _ = Nothing
 
-conj :: GExpr m -> GExpr m -> GExpr m
-conj (EList s) e = EList (e:s)
+makeSymbol :: String -> GExpr m
+makeSymbol n = ESymbol n
+
+conj :: (Monad m) => GExpr m -> GExpr m -> m (GExpr m)
+conj (EList s) e = return . EList $ (e:s)
 -- NOTE: the vector is stored in reverse inside the construct
-conj (EVector s) e = EVector (e : s)
+conj (EVector s) e = return . EVector $ (e : s)
 -- NOTE: conj:ing to a map requires a seqable element with at least two
 -- elements, being the new key and value to be added
-conj (EMap m) e = let (k:v:_) = seqElems e in EMap $ M.insert k v m
-conj (ESet s) e = ESet $ S.insert e s
+conj (EMap m) e = let (k:v:_) = seqElems e in
+  return . EMap $ M.insert k v m
+conj (ESet s) e = return . ESet $ S.insert e s
+conj ENil e = return . EList $ [e]
+conj coll e = fail $ "Cannot conj " ++ show e ++ " to collection " ++ show coll

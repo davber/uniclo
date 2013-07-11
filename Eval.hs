@@ -42,6 +42,8 @@ unifyBindings e1 e2 = unify e1 e2 []
 -- binding list
 unify :: Expr -> Expr -> BindingList -> Maybe (BindingList)
 unify (ESymbol name) value b = Just $ (name, value) : b
+unify (EList [ESymbol q, e1]) e2 b | elem q ["'", "quote", "`", "backquote"] =
+  if e1 == e2 then Just b else Nothing
 unify s1 s2 b | isSeqable s1 && isSeqable s2 = unifyList (seqElems s1) (seqElems s2) b
 unify s1 s2 b | s1 == s2 = Just b
               | True = Nothing
@@ -90,11 +92,12 @@ evalExpr e@(EList (f : params)) = do
 evalExpr e@(ENumber {}) = return e
 evalExpr e@(EString {}) = return e
 evalExpr e@(Fun {}) = return e
+evalExpr e@(EBool {}) = return e
 evalExpr e@ENil = return e
 evalExpr e | isSeqable e = do
   vals <- mapM evalExpr $ seqElems e
   return $ makeSeq (seqType e) vals
-evalExpr expr = throwError $ "Could not evaluate " ++ show expr
+evalExpr expr = throwError $ "Could not evaluate " ++ show expr ++ " of type " ++ exprType expr
 
 -- evalStr evalues expression by expression, thus allowing for definitions
 -- of reader macros
@@ -274,8 +277,8 @@ bootstrap :: Comp ()
 bootstrap = do
   put . CompState $ S.emptyState
   setTraceFlag False
-  mapM_ makePrimLambda primFuns
-  mapM_ makePrimSpecial primSpecials
+  mapM_ (makePrimFun funFunType) primFuns
+  mapM_ (makePrimFun specialFunType) primSpecials
   mapM_ setGlobal [("nil", ENil), ("false", EBool False), ("true", EBool True)]
   setGlobal ("*prefix-symbols*",
              (EList $ map ESymbol ["`", "'", "~", "~@"]))
@@ -290,18 +293,24 @@ bootstrapState = do
 -- 
 
 primFuns = [
-  "rest", "apply", "print", "eval", "eval*", "slurp", "read*", "macroexpand-1", "macroexpand",
+  "rest", "apply", "print", "eval", "eval*", "slurp", "getline", "read*", "macroexpand-1", "macroexpand",
   "cons", "first", "type", "seq?", "seqable?", "container?", "seq", "conj",
-  "get", "nth",
-  "+", "-", "*", "div", "mod", "<", "=", "count",
+  "get",
+  "+", "-", "*", "div", "mod", "<", "=",
   "name", "str", "char",
-  "trace", "fail"]
-primSpecials = ["def", "do", "if", "dump", "quote", "unify", "fun", "backquote"]
+  "trace", "fail", "exit",
+  "unify", "get-global", "get-local", "set-global!", "set-local!",
+  "stash!", "import-stash!", "reset-stash!", "get-globals", "get-locals",
+  "reset-all!", "reset-local!" ]
+primSpecials = ["do", "if", "dump", "quote", "fun", "backquote"]
 
-makePrimLambda :: String -> Comp ()
-makePrimLambda name = setGlobal $ (name, Fun { funLambda = Nothing, funName = Just name, funFun = Just $ prim name, funType = funFunType })
-makePrimSpecial :: String -> Comp ()
-makePrimSpecial name = setGlobal $ (name, Fun { funLambda = Nothing, funName = Just name, funFun = Just $ prim name, funType = specialFunType })
+makeNativeName :: String -> String
+makeNativeName s = "_" ++ s
+
+makePrimFun :: FunType -> String -> Comp ()
+makePrimFun fType name = mapM_ (\n -> setGlobal (n, fun)) [natName, name] where
+  fun = Fun { funLambda = Nothing, funName = Just name, funFun = Just $ prim name, funType = fType }
+  natName = makeNativeName name
 
 -- implementations of both functions and specials
 prim :: String -> CompFun
@@ -312,13 +321,14 @@ prim "rest" (param : _) = return . EList $ rest where
    elems = seqElems param
    rest = if null elems then [] else tail . seqElems $ param
 prim "apply" (f : params) = let vals = init params ++ (seqElems $ last params) in
-   apply f vals
+  apply f vals
 prim "print" params = (liftIO . putStr . Str.join "" $ map printShow params) >> return ENil
 prim "eval" (param : _) = evalExpr param
 prim "eval*" (s : _) = do
      values <- (expandProgram (seqElems s) >>= evalProgram)
      return $ if length values == 0 then ENil else last values
 prim "slurp" ((EString n) : _) = liftIO $ tryReadFile n >>= return . EString
+prim "getline" _ = liftIO $ getLine >>= return . EString
 prim "read*" ((EString s) : _) = readProgram s >>= return . EList
 prim "macroexpand-1" (e : _) = expandMacro1 e >>= maybe (return e) return
 prim "macroexpand" (e : _) = expandMacro e
@@ -338,7 +348,7 @@ prim "seq" (s : _) = let elems = seqElems s in
      return $ if null elems then ENil else EList elems
 -- conj can add many elements, where maps expects sequences of key and value
 -- for each added element
-prim "conj" (s : adding) = return $ foldl conj s adding
+prim "conj" (s : adding) = foldM conj s adding
 prim "nth" (s : (ENumber n) : _) = return $ if length elems > ind then elems !! ind else ENil where
   ind = fromInteger n
   elems = seqElems s
@@ -354,15 +364,29 @@ prim "count" ((EMap m) : _) = return . ENumber . toInteger . M.size $ m
 prim "count" (s : _) = return . ENumber . toInteger . length . seqElems $ s
 prim "trace" (flag : _) = setTraceFlag (isTruthy flag) >>= return . EBool
 prim "fail" args = throwError $ Str.join " " $ map show args
+prim "exit" _ = fail "programmatic exit"
+prim "unify" (formal : actual : []) = unifyState formal actual >>= return . EBool
+prim "stash!" [s, v] = stashLocal (exprName s, v) >> return ENil
+prim "import-stash!" _ = importStash >>= return . EList . map (\(k, v) -> makeSeq  SeqVector [makeSymbol k, v])
+prim "reset-stash!" _ = resetStash >> return ENil
+prim "get-globals" _ = getGlobalBindings >>= return . EList . map (\(k, v) -> makeSeq SeqVector [ESymbol k, v])
+prim "get-locals" _ = getLocalBindings >>= return . EList . map (\(k, v) -> makeSeq SeqVector [ESymbol k, v])
+prim "reset-all!" _ = bootstrap >> return ENil
+prim "reset-local!" _ = resetLocal >> return ENil
 
 --
 -- special forms, with parameters unevaluated
 --
--- TODO: allow def with zero or more than 1 value arguments
-prim "def" [ESymbol var, value] = do
-  evaled <- evalExpr value
-  setGlobal (var, evaled)
-  return evaled
+prim "set-global!" [ESymbol var, value] = do
+  setGlobal (var, value)
+  return value
+prim "set-local!" [ESymbol var, value] = do
+  setLocal (var, value)
+  return value
+prim "get-global" [ESymbol var] =
+  getGlobal var >>= return . maybe ENil id
+prim "get-local" [ESymbol var] =
+  getLocal var >>= return . maybe ENil id
 prim "do" params = if null params then return ENil else liftM last . mapM evalExpr $ params
 prim "if" (condPart : thenPart : elsePart : []) = do
   cond <- evalExpr condPart
@@ -374,11 +398,11 @@ prim "dump" _ = do
   return ENil
 prim "quote" (param : _) = do
   return $ param
-prim "unify" (formal : actual : []) = unifyState formal actual >>= return . EBool
-prim "fun" (funSpec : params) = makeLambda Nothing params $ createSpecFunType (seqElems funSpec)
+prim "fun" (funSpec : params) = do
+  spec <- evalExpr funSpec
+  makeLambda Nothing params $ createSpecFunType (seqElems spec)
 prim "backquote" (s : _) = do
   backquote 1 s
-
 prim fun args = throwError $ "Got a strange call of " ++ show fun ++ " on " ++ show args
 
 makeLambda :: Maybe String -> [Expr] -> FunType -> Comp Expr
