@@ -362,6 +362,7 @@ prim "<" (p1 : p2 : []) = return $ EBool (p1 < p2)
 prim "=" (p1 : p2 : []) = return $ EBool (p1 == p2)
 prim "count" ((EMap m) : _) = return . ENumber . toInteger . M.size $ m
 prim "count" (s : _) = return . ENumber . toInteger . length . seqElems $ s
+prim "trace" [] = getTracePat >>= return . maybe ENil EString
 prim "trace" (pat : _) = setTracePat (if isTruthy pat then Just . exprStr $ pat else Nothing) >>= return . maybe ENil EString
 prim "fail" args = throwError $ Str.join " " $ map show args
 prim "exit" _ = fail "programmatic exit"
